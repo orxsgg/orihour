@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Play, Pause, Volume2, Scissors } from 'lucide-react';
+import { Play, Pause, Volume2, Scissors, RotateCcw } from 'lucide-react';
 
 interface SnippetTrimmerProps {
   audioUrl?: string;
@@ -30,7 +30,7 @@ function fmtSec(sec: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-type DragMode = 'move' | 'start' | 'end' | null;
+type DragMode = 'move' | 'start' | 'end' | 'playhead' | null;
 
 export default function SnippetTrimmer({
   audioUrl,
@@ -50,28 +50,54 @@ export default function SnippetTrimmer({
   const trackRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const rafRef = useRef<number | null>(null);
+  const playheadRef = useRef(startSec);
   const dragOriginRef = useRef({
     clientX: 0,
     startSec: 0,
     endSec: 30,
   });
 
-  // Keep refs synced for smooth requestAnimationFrame loop
-  const rangeRef = useRef({ startSec, endSec });
-  rangeRef.current = { startSec, endSec };
+  const safeTotal = Math.max(MIN_SNIPPET_SEC + 1, totalSec);
+  const clampedStart = Math.max(0, Math.min(startSec, safeTotal - MIN_SNIPPET_SEC));
+  const clampedEnd = Math.max(
+    clampedStart + MIN_SNIPPET_SEC,
+    Math.min(endSec, safeTotal)
+  );
+  const spanSec = clampedEnd - clampedStart;
 
-  // Sync fallback duration when durationLabel changes
+  const rangeRef = useRef({ startSec: clampedStart, endSec: clampedEnd });
+  rangeRef.current = { startSec: clampedStart, endSec: clampedEnd };
+
+  const updatePlayhead = (nextSec: number) => {
+    const bounded = Math.max(
+      rangeRef.current.startSec,
+      Math.min(rangeRef.current.endSec, nextSec)
+    );
+    playheadRef.current = bounded;
+    setPlayheadSec(bounded);
+  };
+
   useEffect(() => {
     const parsed = parseDurationLabelToSec(durationLabel);
-    setTotalSec((prev) => {
-      if (audioRef.current && Number.isFinite(audioRef.current.duration) && audioRef.current.duration > 0) {
+    setTotalSec(() => {
+      if (
+        audioRef.current &&
+        Number.isFinite(audioRef.current.duration) &&
+        audioRef.current.duration > 0
+      ) {
         return Math.max(10, Math.round(audioRef.current.duration));
       }
       return Math.max(15, parsed, endSec);
     });
   }, [durationLabel, endSec]);
 
-  // Deterministic Instagram-style vertical waveform bars
+  // Keep playhead within bounds if start/end change externally
+  useEffect(() => {
+    if (playheadRef.current < clampedStart || playheadRef.current > clampedEnd) {
+      updatePlayhead(clampedStart);
+    }
+  }, [clampedStart, clampedEnd]);
+
   const bars = useMemo(() => {
     const count = compact ? 42 : 56;
     const seedStr = audioUrl || durationLabel || 'orihour-waveform';
@@ -88,14 +114,6 @@ export default function SnippetTrimmer({
     });
   }, [audioUrl, durationLabel, compact]);
 
-  const safeTotal = Math.max(MIN_SNIPPET_SEC + 1, totalSec);
-  const clampedStart = Math.max(0, Math.min(startSec, safeTotal - MIN_SNIPPET_SEC));
-  const clampedEnd = Math.max(
-    clampedStart + MIN_SNIPPET_SEC,
-    Math.min(endSec, safeTotal)
-  );
-  const spanSec = clampedEnd - clampedStart;
-
   const stopPreview = () => {
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
@@ -111,11 +129,17 @@ export default function SnippetTrimmer({
     const audio = audioRef.current;
     if (!audio || !audioUrl) return;
 
+    const { startSec: s, endSec: e } = rangeRef.current;
+    const clampedFrom =
+      fromSec >= e - 0.15 || fromSec < s ? s : Math.max(s, Math.min(e - 0.1, fromSec));
+
     try {
-      audio.currentTime = Math.max(0, Math.min(safeTotal - 0.2, fromSec));
+      audio.currentTime = Math.max(0, Math.min(safeTotal - 0.1, clampedFrom));
     } catch {
-      // Ignore seek before metadata
+      // Ignore seek before metadata loaded
     }
+
+    updatePlayhead(clampedFrom);
 
     audio
       .play()
@@ -124,10 +148,11 @@ export default function SnippetTrimmer({
         const tick = () => {
           const el = audioRef.current;
           if (!el || el.paused) return;
-          const { startSec: s, endSec: e } = rangeRef.current;
-          if (el.currentTime >= e || el.currentTime < s - 0.3) {
-            el.currentTime = s;
+          const curRange = rangeRef.current;
+          if (el.currentTime >= curRange.endSec || el.currentTime < curRange.startSec - 0.25) {
+            el.currentTime = curRange.startSec;
           }
+          playheadRef.current = el.currentTime;
           setPlayheadSec(el.currentTime);
           rafRef.current = requestAnimationFrame(tick);
         };
@@ -139,10 +164,9 @@ export default function SnippetTrimmer({
       });
   };
 
-  // Cleanup audio on unmount or URL change
   useEffect(() => {
     stopPreview();
-    setPlayheadSec(startSec);
+    updatePlayhead(clampedStart);
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       if (audioRef.current) {
@@ -151,13 +175,29 @@ export default function SnippetTrimmer({
     };
   }, [audioUrl]);
 
-  // Global pointer drag handling for smooth Instagram-like scrubbing
   useEffect(() => {
     if (!dragMode) return;
 
     const handleMove = (e: PointerEvent) => {
       const rect = trackRef.current?.getBoundingClientRect();
       if (!rect || rect.width <= 0) return;
+
+      if (dragMode === 'playhead') {
+        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const rawSec = ratio * safeTotal;
+        const { startSec: s, endSec: en } = rangeRef.current;
+        const nextPlayhead = Math.max(s, Math.min(en - 0.1, rawSec));
+        playheadRef.current = nextPlayhead;
+        setPlayheadSec(nextPlayhead);
+        if (audioRef.current && Number.isFinite(audioRef.current.duration)) {
+          try {
+            audioRef.current.currentTime = nextPlayhead;
+          } catch {
+            // Ignore seek while scrubbing
+          }
+        }
+        return;
+      }
 
       const deltaPx = e.clientX - dragOriginRef.current.clientX;
       const deltaSec = (deltaPx / rect.width) * safeTotal;
@@ -169,26 +209,34 @@ export default function SnippetTrimmer({
         let nextStart = Math.round(origStart + deltaSec);
         nextStart = Math.max(0, Math.min(safeTotal - width, nextStart));
         const nextEnd = nextStart + width;
+        playheadRef.current = nextStart;
         setPlayheadSec(nextStart);
         onChange(nextStart, nextEnd);
       } else if (dragMode === 'start') {
         let nextStart = Math.round(origStart + deltaSec);
         nextStart = Math.max(0, Math.min(origEnd - MIN_SNIPPET_SEC, nextStart));
+        playheadRef.current = nextStart;
         setPlayheadSec(nextStart);
         onChange(nextStart, origEnd);
       } else if (dragMode === 'end') {
         let nextEnd = Math.round(origEnd + deltaSec);
         nextEnd = Math.max(origStart + MIN_SNIPPET_SEC, Math.min(safeTotal, nextEnd));
-        setPlayheadSec(origStart);
+        const keptPlayhead = Math.min(playheadRef.current, nextEnd - 0.5);
+        playheadRef.current = Math.max(origStart, keptPlayhead);
+        setPlayheadSec(playheadRef.current);
         onChange(origStart, nextEnd);
       }
     };
 
     const handleUp = () => {
+      const finishedMode = dragMode;
       setDragMode(null);
-      // Automatically preview the newly selected range once user finishes dragging!
       if (audioUrl) {
-        startPreviewFrom(rangeRef.current.startSec);
+        if (finishedMode === 'playhead') {
+          startPreviewFrom(playheadRef.current);
+        } else {
+          startPreviewFrom(rangeRef.current.startSec);
+        }
       }
     };
 
@@ -206,7 +254,6 @@ export default function SnippetTrimmer({
   const beginDrag = (mode: Exclude<DragMode, null>, e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Pause preview while actively dragging so audio doesn't stutter
     stopPreview();
     dragOriginRef.current = {
       clientX: e.clientX,
@@ -221,22 +268,34 @@ export default function SnippetTrimmer({
     const nextStart = Math.min(clampedStart, Math.max(0, safeTotal - len));
     const nextEnd = nextStart + len;
     onChange(nextStart, nextEnd);
+    playheadRef.current = nextStart;
     setPlayheadSec(nextStart);
     if (audioUrl) {
       window.setTimeout(() => startPreviewFrom(nextStart), 40);
     }
   };
 
+  const handlePlayheadRangeScrub = (nextVal: number) => {
+    const clamped = Math.max(clampedStart, Math.min(clampedEnd - 0.1, nextVal));
+    playheadRef.current = clamped;
+    setPlayheadSec(clamped);
+    if (audioRef.current && Number.isFinite(audioRef.current.duration)) {
+      try {
+        audioRef.current.currentTime = clamped;
+      } catch {
+        // Ignore seek error
+      }
+    }
+  };
+
   const leftPct = (clampedStart / safeTotal) * 100;
   const widthPct = ((clampedEnd - clampedStart) / safeTotal) * 100;
+  const boundedPlayhead = Math.max(clampedStart, Math.min(clampedEnd, playheadSec));
   const playheadPct =
-    ((Math.max(clampedStart, Math.min(clampedEnd, playheadSec)) - clampedStart) /
-      Math.max(0.5, clampedEnd - clampedStart)) *
-    100;
+    ((boundedPlayhead - clampedStart) / Math.max(0.5, clampedEnd - clampedStart)) * 100;
 
   return (
     <div className="rounded-2xl border border-[#4A2E1B]/18 bg-[#FAF5EC] p-3">
-      {/* Hidden native audio engine for snippet preview */}
       {audioUrl && (
         <audio
           ref={audioRef}
@@ -257,7 +316,7 @@ export default function SnippetTrimmer({
         />
       )}
 
-      {/* Top Row: Play/Pause Preview + Selected Range Badge + Quick Presets */}
+      {/* Top Row: Play/Pause + Restart + Selected Range & Current Playhead Time + Presets */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <button
@@ -265,10 +324,10 @@ export default function SnippetTrimmer({
             disabled={!audioUrl}
             onClick={() => {
               if (isPlaying) stopPreview();
-              else startPreviewFrom(clampedStart);
+              else startPreviewFrom(playheadRef.current);
             }}
             className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#4A2E1B] text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] disabled:cursor-not-allowed disabled:opacity-40"
-            title={audioUrl ? 'Putar / Jeda preview snippet' : 'Upload MP3 dulu untuk preview suara'}
+            title={audioUrl ? 'Putar / Jeda dari posisi garis playhead' : 'Upload MP3 dulu untuk preview'}
           >
             {isPlaying ? (
               <Pause className="h-3 w-3" />
@@ -277,24 +336,45 @@ export default function SnippetTrimmer({
             )}
           </button>
 
+          {audioUrl && (
+            <button
+              type="button"
+              onClick={() => startPreviewFrom(clampedStart)}
+              className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white text-[#5C4432] transition hover:bg-[#EFE4D3] hover:text-[#241A13]"
+              title="Ulang preview dari titik awal snippet"
+            >
+              <RotateCcw className="h-3 w-3" />
+            </button>
+          )}
+
           <div>
             <p className="font-mono text-[10.5px] font-bold text-[#241A13]">
               {fmtSec(clampedStart)} - {fmtSec(clampedEnd)}{' '}
               <span className="font-normal text-[#7A5230]">({spanSec} dtk)</span>
+              {audioUrl && (
+                <span className="ml-1.5 rounded bg-[#4A2E1B]/10 px-1.5 py-0.5 text-[9.5px] text-[#4A2E1B]">
+                  ▶ {fmtSec(boundedPlayhead)}
+                </span>
+              )}
             </p>
             <p className="inline-flex items-center gap-1 font-mono text-[9px] text-[#7A624E]">
-              {dragMode ? (
+              {dragMode === 'playhead' ? (
+                <>
+                  <Volume2 className="h-2.5 w-2.5 text-[#4A2E1B]" />
+                  Menggeser posisi putar ke {fmtSec(boundedPlayhead)}...
+                </>
+              ) : dragMode ? (
                 <>
                   <Scissors className="h-2.5 w-2.5 text-[#4A2E1B]" />
-                  Menggeser rentang... lepas untuk dengar preview
+                  Mengatur rentang... lepas untuk dengar preview
                 </>
               ) : isPlaying ? (
                 <>
                   <Volume2 className="h-2.5 w-2.5 text-emerald-700" />
-                  Memutar preview bagian terpilih (loop)
+                  Geser garis putih atau slider bawah untuk loncat posisi
                 </>
               ) : audioUrl ? (
-                'Geser kotak atau tarik tepi kiri/kanan bebas'
+                'Geser kotak, tarik tepi, atau geser garis playhead bebas'
               ) : (
                 'Upload MP3 agar preview bunyi otomatis saat dilepas'
               )}
@@ -321,7 +401,7 @@ export default function SnippetTrimmer({
         </div>
       </div>
 
-      {/* Interactive Instagram-Style Waveform & Draggable Highlight Window */}
+      {/* Interactive Instagram-Style Waveform & Draggable Highlight Window + Draggable Playhead */}
       <div
         ref={trackRef}
         className={`relative mt-3 overflow-hidden rounded-xl border border-[#4A2E1B]/15 bg-[#EFE5D6] select-none ${
@@ -356,7 +436,7 @@ export default function SnippetTrimmer({
           style={{ width: `${Math.max(0, 100 - leftPct - widthPct)}%` }}
         />
 
-        {/* Draggable Highlight Window (Slide whole snippet along track) */}
+        {/* Draggable Highlight Window */}
         <div
           onPointerDown={(e) => beginDrag('move', e)}
           className="absolute inset-y-0 cursor-grab border-y-2 border-[#4A2E1B] bg-[#B58A52]/16 active:cursor-grabbing"
@@ -365,27 +445,30 @@ export default function SnippetTrimmer({
             width: `${Math.max(4, widthPct)}%`,
           }}
         >
-          {/* Live Moving Playhead inside the selected snippet */}
-          {isPlaying && (
-            <div
-              className="pointer-events-none absolute inset-y-0 w-[2px] bg-[#FAF5EC] shadow-[0_0_6px_rgba(36,26,19,0.8)]"
-              style={{ left: `${Math.max(0, Math.min(100, playheadPct))}%` }}
-            />
-          )}
+          {/* Draggable Vertical Playhead Line (Always visible & scrubbable inside window) */}
+          <div
+            onPointerDown={(e) => beginDrag('playhead', e)}
+            title="Geser garis ini untuk memindahkan posisi preview audio"
+            className="group absolute inset-y-0 z-20 flex w-4 -translate-x-1/2 cursor-ew-resize justify-center"
+            style={{ left: `${Math.max(0, Math.min(100, playheadPct))}%` }}
+          >
+            <div className="h-full w-[2.5px] bg-[#FAF5EC] shadow-[0_0_6px_rgba(36,26,19,0.85)] transition-colors group-hover:bg-[#E6C79C]" />
+            <span className="absolute top-0.5 h-2.5 w-2.5 rounded-full border border-[#4A2E1B] bg-[#FAF5EC] shadow-xs transition-transform group-hover:scale-125" />
+          </div>
 
-          {/* Left Trim Handle (Drag to adjust start time / duration freely) */}
+          {/* Left Trim Handle */}
           <div
             onPointerDown={(e) => beginDrag('start', e)}
-            className="absolute inset-y-0 left-0 flex w-3.5 -translate-x-1/2 cursor-ew-resize items-center justify-center rounded-l-md bg-[#4A2E1B] shadow-sm transition hover:bg-[#3A2213]"
+            className="absolute inset-y-0 left-0 z-30 flex w-3.5 -translate-x-1/2 cursor-ew-resize items-center justify-center rounded-l-md bg-[#4A2E1B] shadow-sm transition hover:bg-[#3A2213]"
             title="Tarik untuk ubah titik mulai"
           >
             <span className="h-4 w-[2px] rounded-full bg-[#FAF5EC]/85" />
           </div>
 
-          {/* Right Trim Handle (Drag to adjust end time / duration freely) */}
+          {/* Right Trim Handle */}
           <div
             onPointerDown={(e) => beginDrag('end', e)}
-            className="absolute inset-y-0 right-0 flex w-3.5 translate-x-1/2 cursor-ew-resize items-center justify-center rounded-r-md bg-[#4A2E1B] shadow-sm transition hover:bg-[#3A2213]"
+            className="absolute inset-y-0 right-0 z-30 flex w-3.5 translate-x-1/2 cursor-ew-resize items-center justify-center rounded-r-md bg-[#4A2E1B] shadow-sm transition hover:bg-[#3A2213]"
             title="Tarik untuk ubah titik selesai"
           >
             <span className="h-4 w-[2px] rounded-full bg-[#FAF5EC]/85" />
@@ -393,7 +476,44 @@ export default function SnippetTrimmer({
         </div>
       </div>
 
-      {/* Bottom Time Ruler */}
+      {/* Dedicated Fine-Grain Playhead Seek Bar for the Selected Snippet Range */}
+      {audioUrl && (
+        <div className="mt-2.5 flex items-center gap-2">
+          <span className="font-mono text-[9px] font-semibold text-[#7A5230]">
+            {fmtSec(clampedStart)}
+          </span>
+          <div className="relative flex flex-1 items-center">
+            <div className="pointer-events-none h-1 w-full overflow-hidden rounded-full bg-[#4A2E1B]/16">
+              <div
+                className="h-full rounded-full bg-[#4A2E1B]"
+                style={{ width: `${Math.max(0, Math.min(100, playheadPct))}%` }}
+              />
+            </div>
+            <input
+              type="range"
+              min={clampedStart}
+              max={Math.max(clampedStart + 0.5, clampedEnd)}
+              step={0.1}
+              value={boundedPlayhead}
+              onPointerDown={() => stopPreview()}
+              onChange={(e) => handlePlayheadRangeScrub(parseFloat(e.target.value))}
+              onPointerUp={() => startPreviewFrom(playheadRef.current)}
+              onKeyUp={() => startPreviewFrom(playheadRef.current)}
+              aria-label="Geser posisi preview di dalam snippet"
+              className="absolute inset-0 h-4 w-full -translate-y-1.5 cursor-pointer opacity-0"
+            />
+            <span
+              className="pointer-events-none absolute top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#FAF5EC] bg-[#4A2E1B] shadow-xs"
+              style={{ left: `${Math.max(0, Math.min(100, playheadPct))}%` }}
+            />
+          </div>
+          <span className="font-mono text-[9px] font-semibold text-[#7A5230]">
+            {fmtSec(clampedEnd)}
+          </span>
+        </div>
+      )}
+
+      {/* Bottom Full-Track Time Ruler */}
       <div className="mt-1.5 flex items-center justify-between font-mono text-[9px] text-[#7A624E]">
         <span>00:00</span>
         <span>{fmtSec(safeTotal * 0.5)}</span>

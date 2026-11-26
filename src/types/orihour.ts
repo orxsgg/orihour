@@ -130,3 +130,59 @@ export const POSTCARD_LIMITS = {
 } as const;
 
 export const MAX_PINBOARD_VISIBLE = 6;
+
+export interface VisitorLogItem {
+  id: string;
+  sessionId: string;
+  path: string;
+  country: string;
+  countryCode: string;
+  region: string;
+  city: string;
+  timezone: string;
+  deviceType: string;
+  browser: string;
+  os: string;
+  referrer: string;
+  viewMode: string;
+  weather: string;
+  screenSize: string;
+  createdAt: string;
+}
+
+export interface AnalyticsBucket {
+  name: string;
+  sublabel?: string;
+  code?: string;
+  count: number;
+  pct: number;
+}
+
+export interface AnalyticsDailyPoint {
+  date: string;
+  label: string;
+  visits: number;
+  uniqueVisitors: number;
+}
+
+export interface AnalyticsDashboardData {
+  tableMissing?: boolean;
+  rangeDays: number;
+  summary: {
+    totalVisits: number;
+    uniqueVisitors: number;
+    todayVisits: number;
+    last7DaysVisits: number;
+    topLocation: string;
+    mobileSharePct: number;
+  };
+  dailySeries: AnalyticsDailyPoint[];
+  byCity: AnalyticsBucket[];
+  byCountry: AnalyticsBucket[];
+  byDevice: AnalyticsBucket[];
+  byBrowser: AnalyticsBucket[];
+  byOs: AnalyticsBucket[];
+  byReferrer: AnalyticsBucket[];
+  byViewMode: AnalyticsBucket[];
+  recentLogs: VisitorLogItem[];
+}

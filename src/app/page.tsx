@@ -105,6 +105,11 @@ export default function OrihourHomePage() {
   const [cameraFocus, setCameraFocus] = useState<CameraFocusTarget>('ENTRY');
   const [weather, setWeather] = useState<WeatherType>('CLEAR');
   const hasManualWeather = useRef(false);
+  const weatherRef = useRef<WeatherType>('CLEAR');
+  const lofiModeRef = useRef(false);
+
+  weatherRef.current = weather;
+  lofiModeRef.current = lofiMode;
 
   const [isLiveTime, setIsLiveTime] = useState(true);
   const [hourDecimal, setHourDecimal] = useState<number>(12.0);
@@ -245,6 +250,45 @@ export default function OrihourHomePage() {
       window.clearTimeout(dataSafetyTimer);
       window.clearTimeout(sceneSafetyTimer);
     };
+  }, []);
+
+  // Catat kunjungan 1x per sesi browser ke dashboard analitik (non-blocking & tanpa simpan IP mentah)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const TRACK_FLAG = 'orihour_visit_tracked_v1';
+    if (window.sessionStorage.getItem(TRACK_FLAG)) return;
+    window.sessionStorage.setItem(TRACK_FLAG, '1');
+
+    const timer = window.setTimeout(() => {
+      const sessionId =
+        window.sessionStorage.getItem('orihour_sid') ||
+        (typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `sid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+      window.sessionStorage.setItem('orihour_sid', sessionId);
+
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+      const screenSize = `${window.innerWidth}x${window.innerHeight}`;
+
+      fetch('/api/analytics/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        keepalive: true,
+        body: JSON.stringify({
+          sessionId,
+          path: window.location.pathname || '/',
+          referrer: document.referrer || '',
+          timezone,
+          screenSize,
+          viewMode: lofiModeRef.current ? 'LO-FI' : '3D',
+          weather: weatherRef.current,
+        }),
+      }).catch(() => {
+        // Abaikan error analitik agar tidak mengganggu pengalaman utama
+      });
+    }, 1800);
+
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {

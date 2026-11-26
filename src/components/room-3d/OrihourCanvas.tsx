@@ -122,6 +122,7 @@ function CameraOrbitRig({
   const { camera } = useThree();
   const controlsRef = useRef<ComponentRef<typeof OrbitControls>>(null);
   const isTransitioning = useRef(true);
+  const elapsedRef = useRef(0);
   const goalPos = useRef(new THREE.Vector3(...CAMERA_RIG.ENTRY.pos));
   const goalTarget = useRef(new THREE.Vector3(...CAMERA_RIG.ENTRY.target));
   const desiredPos = useMemo(() => new THREE.Vector3(), []);
@@ -134,14 +135,15 @@ function CameraOrbitRig({
     isTransitioning.current = true;
   }, [focus]);
 
-  useFrame(({ clock }, delta) => {
+  useFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
     const dt = Math.min(delta, 0.04);
 
     if (isEntryMode) {
-      const t = clock.getElapsedTime();
+      elapsedRef.current += dt;
+      const t = elapsedRef.current;
       const entryRig = CAMERA_RIG.ENTRY;
       desiredPos.set(
         entryRig.pos[0] + Math.sin(t * 0.2) * 0.14,

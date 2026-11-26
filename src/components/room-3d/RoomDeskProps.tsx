@@ -1,9 +1,11 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { PosterItem, RoomConfig, WeatherType } from '@/types/orihour';
 import {
+  createCoffeeSurfaceTexture,
   createMaroonRugPbr,
   createPlasterWallPbr,
   createPosterFallbackTexture,
@@ -21,6 +23,251 @@ interface RoomDeskProps {
   onToggleLamp: () => void;
   onCycleWeather: () => void;
   onHoverLabel: (label: string | null) => void;
+}
+
+const STEAM_VERTEX_SHADER = /* glsl */ `
+  varying vec2 vUv;
+  varying vec3 vWorldNormal;
+  varying vec3 vWorldPos;
+
+  void main() {
+    vUv = uv;
+    vec4 worldPos = modelMatrix * vec4(position, 1.0);
+    vWorldPos = worldPos.xyz;
+    vWorldNormal = normalize(mat3(modelMatrix) * normal);
+    gl_Position = projectionMatrix * viewMatrix * worldPos;
+  }
+`;
+
+const STEAM_FRAGMENT_SHADER = /* glsl */ `
+  uniform float uTime;
+  uniform float uSeed;
+
+  varying vec2 vUv;
+  varying vec3 vWorldNormal;
+  varying vec3 vWorldPos;
+
+  float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+  }
+
+  float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+      mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+      u.y
+    );
+  }
+
+  float fbm(vec2 p) {
+    float val = 0.0;
+    float amp = 0.5;
+    mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
+    for (int i = 0; i < 4; i++) {
+      val += amp * noise(p);
+      p = rot * p * 2.04;
+      amp *= 0.5;
+    }
+    return val;
+  }
+
+  void main() {
+    float y = vUv.y;
+    float x = vUv.x * 2.0 - 1.0;
+
+    // Gentle organic air-current sway increasing as steam rises
+    float sway =
+      sin(y * 5.2 - uTime * 1.1 + uSeed) * 0.24 * y +
+      cos(y * 3.1 - uTime * 0.72 + uSeed * 1.7) * 0.14 * y;
+
+    // Plume widens softly as it cools and disperses upward
+    float plumeWidth = mix(0.42, 0.94, y);
+    float radialMask = smoothstep(plumeWidth, 0.0, abs(x - sway));
+
+    // Smooth fade-in just above espresso surface and gradual fade-out at top
+    float vertMask = smoothstep(0.0, 0.15, y) * pow(max(0.0, 1.0 - y), 1.3);
+
+    // Domain-warped fBm creates realistic curling wisps of hot coffee vapor
+    vec2 flowUv = vec2((x - sway) * 2.15 + uSeed, y * 2.7 - uTime * 0.44);
+    float warp = fbm(flowUv + vec2(0.0, -uTime * 0.18));
+    float wisp = fbm(flowUv + vec2(warp * 1.5, warp * 0.85 - uTime * 0.12));
+    float tendrils = smoothstep(0.35, 0.78, wisp);
+
+    // Grazing-angle fade hides flat plane edges when viewed from the side
+    vec3 viewDir = normalize(cameraPosition - vWorldPos);
+    float facing = abs(dot(normalize(vWorldNormal), viewDir));
+    float angleFade = smoothstep(0.1, 0.58, facing);
+
+    float alpha = radialMask * vertMask * tendrils * angleFade * 0.44;
+    if (alpha < 0.004) discard;
+
+    vec3 steamColor = mix(vec3(0.95, 0.91, 0.85), vec3(1.0, 0.98, 0.94), tendrils);
+    gl_FragColor = vec4(steamColor, alpha);
+  }
+`;
+
+// Realistic Hollow Stoneware Ceramic Coffee Mug with Espresso Crema & GLSL Curling Vapor Steam
+function ArtisanCoffeeMug({
+  wood,
+}: {
+  wood: ReturnType<typeof createWalnutWoodPbr>;
+}) {
+  const coffeeTex = useMemo(() => createCoffeeSurfaceTexture(), []);
+  const elapsedRef = useRef(0);
+
+  const { mugGeo, handleGeo, steamMaterials } = useMemo(() => {
+    const pts = [
+      new THREE.Vector2(0.0, 0.008),
+      new THREE.Vector2(0.048, 0.008),
+      new THREE.Vector2(0.052, 0.012),
+      new THREE.Vector2(0.058, 0.022),
+      new THREE.Vector2(0.064, 0.068),
+      new THREE.Vector2(0.066, 0.118),
+      new THREE.Vector2(0.068, 0.136),
+      new THREE.Vector2(0.0655, 0.141),
+      new THREE.Vector2(0.0615, 0.141),
+      new THREE.Vector2(0.059, 0.134),
+      new THREE.Vector2(0.057, 0.105),
+      new THREE.Vector2(0.053, 0.03),
+      new THREE.Vector2(0.044, 0.018),
+      new THREE.Vector2(0.0, 0.017),
+    ];
+
+    const handleCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0.061, 0.114, 0),
+      new THREE.Vector3(0.095, 0.116, 0),
+      new THREE.Vector3(0.11, 0.088, 0),
+      new THREE.Vector3(0.102, 0.056, 0),
+      new THREE.Vector3(0.082, 0.04, 0),
+      new THREE.Vector3(0.057, 0.042, 0),
+    ]);
+
+    const seeds = [0.4, 4.1, 8.7];
+    const mats = seeds.map(
+      (seed) =>
+        new THREE.ShaderMaterial({
+          vertexShader: STEAM_VERTEX_SHADER,
+          fragmentShader: STEAM_FRAGMENT_SHADER,
+          uniforms: {
+            uTime: { value: 0 },
+            uSeed: { value: seed },
+          },
+          transparent: true,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        })
+    );
+
+    return {
+      mugGeo: new THREE.LatheGeometry(pts, 36),
+      handleGeo: new THREE.TubeGeometry(handleCurve, 26, 0.0082, 12, false),
+      steamMaterials: mats,
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      mugGeo.dispose();
+      handleGeo.dispose();
+      steamMaterials.forEach((m) => m.dispose());
+    };
+  }, [mugGeo, handleGeo, steamMaterials]);
+
+  useFrame((_, delta) => {
+    elapsedRef.current += Math.min(delta, 0.05);
+    const t = elapsedRef.current;
+    for (let i = 0; i < steamMaterials.length; i++) {
+      steamMaterials[i].uniforms.uTime.value = t;
+    }
+  });
+
+  return (
+    <group position={[1.76, 1.48, 0.24]} rotation={[0, -0.42, 0]}>
+      {/* Walnut-Rimmed Coaster with Recessed Cork Inlay */}
+      <mesh position={[0, 0.0045, 0]} castShadow receiveShadow>
+        <cylinderGeometry args={[0.092, 0.095, 0.009, 32]} />
+        <meshStandardMaterial map={wood.map} color="#4A2E1B" roughness={0.62} />
+      </mesh>
+      <mesh position={[0, 0.0092, 0]} receiveShadow>
+        <cylinderGeometry args={[0.079, 0.079, 0.0018, 28]} />
+        <meshStandardMaterial color="#9E764E" roughness={0.92} />
+      </mesh>
+
+      {/* Unglazed Terracotta-Clay Foot Base */}
+      <mesh position={[0, 0.012, 0]} receiveShadow>
+        <cylinderGeometry args={[0.054, 0.05, 0.007, 28]} />
+        <meshStandardMaterial color="#C8B29A" roughness={0.86} />
+      </mesh>
+
+      {/* Hollow Warm Cream Glazed Stoneware Ceramic Body */}
+      <mesh geometry={mugGeo} position={[0, 0.004, 0]} castShadow receiveShadow>
+        <meshPhysicalMaterial
+          color="#F3EDE2"
+          roughness={0.24}
+          metalness={0.02}
+          clearcoat={0.55}
+          clearcoatRoughness={0.18}
+        />
+      </mesh>
+
+      {/* Subtle Warm Toasted Ceramic Rim Glaze Accent */}
+      <mesh position={[0, 0.1435, 0]} rotation={[Math.PI / 2, 0, 0]}>
+        <torusGeometry args={[0.0635, 0.0032, 12, 36]} />
+        <meshStandardMaterial color="#B98E63" roughness={0.34} metalness={0.04} />
+      </mesh>
+
+      {/* Sculpted Ceramic Handle */}
+      <mesh geometry={handleGeo} position={[0, 0.004, 0]} castShadow receiveShadow>
+        <meshPhysicalMaterial
+          color="#F3EDE2"
+          roughness={0.24}
+          metalness={0.02}
+          clearcoat={0.55}
+          clearcoatRoughness={0.18}
+        />
+      </mesh>
+
+      {/* Recessed Rich Espresso with Golden Crema Surface */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.122, 0]}>
+        <circleGeometry args={[0.0585, 32]} />
+        <meshPhysicalMaterial
+          map={coffeeTex}
+          roughness={0.14}
+          metalness={0.02}
+          clearcoat={0.85}
+          clearcoatRoughness={0.08}
+        />
+      </mesh>
+
+      {/* Subtle Meniscus Crema Rim Ring hugging the Inner Ceramic Wall */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.1226, 0]}>
+        <ringGeometry args={[0.051, 0.0588, 32]} />
+        <meshStandardMaterial
+          color="#B57E4C"
+          roughness={0.42}
+          transparent
+          opacity={0.52}
+        />
+      </mesh>
+
+      {/* Volumetric GLSL Curling Coffee Steam (3 Intersecting Soft-Fading Plume Planes) */}
+      <group position={[0, 0.24, 0]}>
+        {steamMaterials.map((mat, idx) => (
+          <mesh
+            key={idx}
+            material={mat}
+            rotation={[0, (idx * Math.PI) / 3, 0]}
+            renderOrder={4}
+          >
+            <planeGeometry args={[0.135, 0.245]} />
+          </mesh>
+        ))}
+      </group>
+    </group>
+  );
 }
 
 // Sculpted Mid-Century Architect Desk Lamp (Sealed Rim — Zero Light Leak Speckles)
@@ -626,7 +873,7 @@ export default function RoomDeskProps({
       {/* Mid-Century Walnut Study & Listening Desk */}
       <MidCenturyStudyDesk wood={wood} />
 
-      {/* Front Window Wall (FrontSide shadows seal exterior sunlight cleanly without interior acne) */}
+      {/* Front Window Wall */}
       <mesh geometry={frontWallGeo} position={[0, 0, -1.65]} castShadow receiveShadow>
         <meshStandardMaterial
           map={plaster.map}
@@ -638,7 +885,7 @@ export default function RoomDeskProps({
         />
       </mesh>
 
-      {/* Left, Right & Back Walls: castShadow with FrontSide blocks ALL stray sunlight from walls with ZERO interior acne! */}
+      {/* Left, Right & Back Walls */}
       <mesh position={[-3.85, 2.3, 2.0]} castShadow receiveShadow>
         <boxGeometry args={[0.4, 5.2, 8.0]} />
         <meshStandardMaterial
@@ -819,33 +1066,8 @@ export default function RoomDeskProps({
         onHoverLabel={onHoverLabel}
       />
 
-      {/* Ceramic Coffee Mug with Outward-Curving Handle & Cork Coaster */}
-      <group position={[1.76, 1.48, 0.24]} rotation={[0, -0.42, 0]}>
-        <mesh position={[0, 0.004, 0]} receiveShadow>
-          <cylinderGeometry args={[0.088, 0.09, 0.008, 24]} />
-          <meshStandardMaterial color="#8B633F" roughness={0.9} />
-        </mesh>
-        <mesh position={[0, 0.076, 0]} castShadow receiveShadow>
-          <cylinderGeometry args={[0.066, 0.06, 0.136, 24]} />
-          <meshStandardMaterial color="#F2EEE6" roughness={0.22} metalness={0.05} />
-        </mesh>
-        <mesh position={[0, 0.143, 0]} rotation={[Math.PI / 2, 0, 0]}>
-          <torusGeometry args={[0.062, 0.005, 10, 24]} />
-          <meshStandardMaterial color="#F2EEE6" roughness={0.2} metalness={0.05} />
-        </mesh>
-        <mesh position={[0.06, 0.078, 0]} rotation={[0, 0, -Math.PI / 2]} castShadow receiveShadow>
-          <torusGeometry args={[0.04, 0.0095, 12, 20, Math.PI]} />
-          <meshStandardMaterial color="#F2EEE6" roughness={0.22} metalness={0.05} />
-        </mesh>
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.1445, 0]}>
-          <circleGeometry args={[0.058, 24]} />
-          <meshStandardMaterial color="#381E10" roughness={0.14} />
-        </mesh>
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.145, 0]}>
-          <ringGeometry args={[0.044, 0.055, 24]} />
-          <meshStandardMaterial color="#6F4429" roughness={0.35} transparent opacity={0.45} />
-        </mesh>
-      </group>
+      {/* Realistic Hollow Stoneware Coffee Mug with Espresso Crema & GLSL Curling Steam */}
+      <ArtisanCoffeeMug wood={wood} />
     </group>
   );
 }

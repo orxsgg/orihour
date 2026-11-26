@@ -183,6 +183,7 @@ export default function DeskWallet3D({
 
   const openAnim = useRef(0);
   const hoverLiftRef = useRef(0);
+  const elapsedRef = useRef(0);
   const [hovered, setHovered] = useState(false);
   const [avatarImg, setAvatarImg] = useState<HTMLImageElement | null>(null);
 
@@ -389,8 +390,9 @@ export default function DeskWallet3D({
     []
   );
 
-  useFrame(({ clock }, delta) => {
+  useFrame((_, delta) => {
     const dt = Math.min(delta, 0.045);
+    elapsedRef.current += dt;
 
     if (isOpen && openAnim.current < 1) {
       openAnim.current = Math.min(1, openAnim.current + dt / 0.92);
@@ -412,7 +414,7 @@ export default function DeskWallet3D({
 
     // Smoothly faded idle bob while open (zero step jump when closing starts)
     const bobWeight = smoothstepRange(0.86, 1.0, p);
-    const idleBob = Math.sin(clock.getElapsedTime() * 1.5) * 0.0018 * bobWeight;
+    const idleBob = Math.sin(elapsedRef.current * 1.5) * 0.0018 * bobWeight;
 
     if (rootRef.current) {
       rootRef.current.position.lerpVectors(math.closedPos, math.openPos, liftT);

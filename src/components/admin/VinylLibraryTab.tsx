@@ -13,11 +13,14 @@ import {
   X,
   Tag,
   CheckCircle2,
+  AlertTriangle,
   Image as ImageIcon,
   Volume2,
   ListMusic,
   Scissors,
   Star,
+  CheckSquare,
+  Square,
 } from 'lucide-react';
 import {
   ClipMode,
@@ -32,6 +35,7 @@ import { ProcessedImageResult } from '@/lib/imageProcessor';
 import { uploadMediaToSupabase } from '@/lib/supabase/storage';
 import { getSleeveDataUrl } from '@/components/room-3d/textures';
 import ThemedDropdown, { DropdownOption } from '@/components/ui/ThemedDropdown';
+import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import ImageCropEnhanceModal from './ImageCropEnhanceModal';
 import SnippetTrimmer from './SnippetTrimmer';
 
@@ -42,8 +46,10 @@ interface VinylLibraryTabProps {
   onCreateVinyl: (payload: Partial<VinylRecord>) => Promise<void>;
   onUpdateVinyl: (payload: Partial<VinylRecord> & { id: string }) => Promise<void>;
   onDeleteVinyl: (id: string) => Promise<void>;
+  onBulkDeleteVinyls?: (ids: string[]) => Promise<void>;
   onAddGenre: (name: string) => Promise<string>;
   onDeleteGenre: (id: string) => Promise<void>;
+  onBulkDeleteGenres?: (ids: string[]) => Promise<void>;
 }
 
 const LABEL_SWATCHES = [
@@ -136,8 +142,10 @@ export default function VinylLibraryTab({
   onCreateVinyl,
   onUpdateVinyl,
   onDeleteVinyl,
+  onBulkDeleteVinyls,
   onAddGenre,
   onDeleteGenre,
+  onBulkDeleteGenres,
 }: VinylLibraryTabProps) {
   const [mounted, setMounted] = useState(false);
   const [editing, setEditing] = useState<VinylFormState | null>(null);
@@ -147,13 +155,27 @@ export default function VinylLibraryTab({
   const [uploadingTrackId, setUploadingTrackId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
 
+  // Bulk-selection states for vinyls, genres, and tracklist rows
+  const [selectedVinylIds, setSelectedVinylIds] = useState<Set<string>>(new Set());
+  const [bulkDeletingVinyls, setBulkDeletingVinyls] = useState(false);
+  const [selectedGenreIds, setSelectedGenreIds] = useState<Set<string>>(new Set());
+  const [selectedTrackIds, setSelectedTrackIds] = useState<Set<string>>(new Set());
+
   const [showGenreManager, setShowGenreManager] = useState(false);
   const [newGenreName, setNewGenreName] = useState('');
   const [genreBusy, setGenreBusy] = useState(false);
+
+  const [confirmState, setConfirmState] = useState<{
+    title: string;
+    description: string;
+    confirmLabel: string;
+    onConfirm: () => Promise<void> | void;
+  } | null>(null);
 
   const coverInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -164,13 +186,21 @@ export default function VinylLibraryTab({
   }, []);
 
   useEffect(() => {
-    if (!editing) return;
+    if (!editing) {
+      setSelectedTrackIds(new Set());
+      return;
+    }
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = prev;
     };
   }, [editing]);
+
+  const showError = (msg: string) => {
+    setErrorMsg(msg);
+    setTimeout(() => setErrorMsg(null), 4500);
+  };
 
   const genreNames = useMemo(() => {
     const set = new Set<string>(genres.map((g) => g.name));
@@ -202,7 +232,120 @@ export default function VinylLibraryTab({
     });
   }, [vinyls, search, typeFilter]);
 
+  const allFilteredVinylsSelected =
+    filteredVinyls.length > 0 && filteredVinyls.every((v) => selectedVinylIds.has(v.id));
+
+  const toggleVinylSelect = (id: string) => {
+    setSelectedVinylIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllVinyls = () => {
+    if (allFilteredVinylsSelected) {
+      setSelectedVinylIds((prev) => {
+        const next = new Set(prev);
+        filteredVinyls.forEach((v) => next.delete(v.id));
+        return next;
+      });
+    } else {
+      setSelectedVinylIds((prev) => {
+        const next = new Set(prev);
+        filteredVinyls.forEach((v) => next.add(v.id));
+        return next;
+      });
+    }
+  };
+
+  const requestBulkDeleteVinyls = () => {
+    const ids = Array.from(selectedVinylIds).filter((id) =>
+      vinyls.some((v) => v.id === id)
+    );
+    if (ids.length === 0) return;
+
+    setConfirmState({
+      title: `Hapus ${ids.length} Koleksi Vinyl?`,
+      description: `Sebanyak ${ids.length} koleksi vinyl terpilih akan dihapus permanen dari rak, turntable, dan katalog Orihour.`,
+      confirmLabel: `Hapus (${ids.length})`,
+      onConfirm: async () => {
+        setBulkDeletingVinyls(true);
+        try {
+          if (onBulkDeleteVinyls) {
+            await onBulkDeleteVinyls(ids);
+          } else {
+            for (const id of ids) {
+              await onDeleteVinyl(id);
+            }
+          }
+          setSelectedVinylIds(new Set());
+          setStatusMsg(`${ids.length} koleksi vinyl berhasil dihapus.`);
+        } catch (err) {
+          showError(err instanceof Error ? err.message : 'Gagal menghapus koleksi terpilih.');
+        } finally {
+          setBulkDeletingVinyls(false);
+          setConfirmState(null);
+        }
+      },
+    });
+  };
+
+  const allGenresSelected =
+    genres.length > 0 && genres.every((g) => selectedGenreIds.has(g.id));
+
+  const toggleGenreSelect = (id: string) => {
+    setSelectedGenreIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllGenres = () => {
+    if (allGenresSelected) {
+      setSelectedGenreIds(new Set());
+    } else {
+      setSelectedGenreIds(new Set(genres.map((g) => g.id)));
+    }
+  };
+
+  const requestBulkDeleteGenres = () => {
+    const ids = Array.from(selectedGenreIds).filter((id) =>
+      genres.some((g) => g.id === id)
+    );
+    if (ids.length === 0) return;
+
+    setConfirmState({
+      title: `Hapus ${ids.length} Genre Terpilih?`,
+      description: `Sebanyak ${ids.length} genre terpilih akan dihapus dari daftar pilihan dropdown.`,
+      confirmLabel: `Hapus (${ids.length})`,
+      onConfirm: async () => {
+        setGenreBusy(true);
+        try {
+          if (onBulkDeleteGenres) {
+            await onBulkDeleteGenres(ids);
+          } else {
+            for (const id of ids) {
+              await onDeleteGenre(id);
+            }
+          }
+          setSelectedGenreIds(new Set());
+          setStatusMsg(`${ids.length} genre berhasil dihapus dari pilihan dropdown.`);
+        } catch (err) {
+          showError(err instanceof Error ? err.message : 'Gagal menghapus genre terpilih.');
+        } finally {
+          setGenreBusy(false);
+          setConfirmState(null);
+        }
+      },
+    });
+  };
+
   const openEdit = (v: VinylRecord) => {
+    setSelectedTrackIds(new Set());
     setEditing({
       id: v.id,
       title: v.title,
@@ -246,7 +389,7 @@ export default function VinylLibraryTab({
           : `Cover HD berhasil di-upload (${result.width}×${result.height}px).`
       );
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Gagal upload cover.');
+      showError(err instanceof Error ? err.message : 'Gagal upload cover.');
     } finally {
       setUploadingCover(false);
     }
@@ -285,7 +428,7 @@ export default function VinylLibraryTab({
           : 'MP3 berhasil di-upload.'
       );
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Gagal upload audio MP3.');
+      showError(err instanceof Error ? err.message : 'Gagal upload audio MP3.');
     } finally {
       setUploadingAudio(false);
     }
@@ -322,6 +465,56 @@ export default function VinylLibraryTab({
         ? { ...prev, tracks: prev.tracks.filter((t) => t.id !== trackId) }
         : prev
     );
+    setSelectedTrackIds((prev) => {
+      const next = new Set(prev);
+      next.delete(trackId);
+      return next;
+    });
+  };
+
+  const toggleTrackSelect = (trackId: string) => {
+    setSelectedTrackIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(trackId)) next.delete(trackId);
+      else next.add(trackId);
+      return next;
+    });
+  };
+
+  const allTracksSelected =
+    Boolean(editing && editing.tracks.length > 0) &&
+    editing!.tracks.every((t) => selectedTrackIds.has(t.id));
+
+  const toggleSelectAllTracks = () => {
+    if (!editing) return;
+    if (allTracksSelected) {
+      setSelectedTrackIds(new Set());
+    } else {
+      setSelectedTrackIds(new Set(editing.tracks.map((t) => t.id)));
+    }
+  };
+
+  const requestRemoveSelectedTracks = () => {
+    if (!editing || selectedTrackIds.size === 0) return;
+    const count = selectedTrackIds.size;
+
+    setConfirmState({
+      title: `Hapus ${count} Lagu dari Tracklist?`,
+      description: `Sebanyak ${count} lagu yang kamu ceklis akan dihapus dari daftar tracklist ini.`,
+      confirmLabel: `Hapus (${count})`,
+      onConfirm: () => {
+        setEditing((prev) =>
+          prev
+            ? {
+                ...prev,
+                tracks: prev.tracks.filter((t) => !selectedTrackIds.has(t.id)),
+              }
+            : prev
+        );
+        setSelectedTrackIds(new Set());
+        setConfirmState(null);
+      },
+    });
   };
 
   const handleTrackAudioSelect = async (
@@ -347,7 +540,7 @@ export default function VinylLibraryTab({
         duration: secs ? formatDurationSeconds(secs) : targetTrack?.duration || '03:30',
       });
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Gagal upload MP3 track.');
+      showError(err instanceof Error ? err.message : 'Gagal upload MP3 track.');
     } finally {
       setUploadingTrackId(null);
     }
@@ -365,23 +558,35 @@ export default function VinylLibraryTab({
       }
       setStatusMsg(`Genre "${canonical}" ditambahkan ke daftar dropdown.`);
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Gagal menambah genre.');
+      showError(err instanceof Error ? err.message : 'Gagal menambah genre.');
     } finally {
       setGenreBusy(false);
     }
   };
 
-  const handleRemoveGenre = async (g: GenreItem) => {
-    if (!window.confirm(`Hapus genre "${g.name}" dari daftar pilihan dropdown?`)) return;
-    setGenreBusy(true);
-    try {
-      await onDeleteGenre(g.id);
-      setStatusMsg(`Genre "${g.name}" dihapus dari pilihan dropdown.`);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Gagal menghapus genre.');
-    } finally {
-      setGenreBusy(false);
-    }
+  const requestRemoveGenre = (g: GenreItem) => {
+    setConfirmState({
+      title: `Hapus Genre "${g.name}"?`,
+      description: `Genre "${g.name}" akan dihapus dari daftar pilihan dropdown di dashboard admin.`,
+      confirmLabel: 'Hapus Genre',
+      onConfirm: async () => {
+        setGenreBusy(true);
+        try {
+          await onDeleteGenre(g.id);
+          setSelectedGenreIds((prev) => {
+            const next = new Set(prev);
+            next.delete(g.id);
+            return next;
+          });
+          setStatusMsg(`Genre "${g.name}" dihapus dari pilihan dropdown.`);
+        } catch (err) {
+          showError(err instanceof Error ? err.message : 'Gagal menghapus genre.');
+        } finally {
+          setGenreBusy(false);
+          setConfirmState(null);
+        }
+      },
+    });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -460,16 +665,35 @@ export default function VinylLibraryTab({
       }
       setEditing(null);
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Gagal menyimpan vinyl.');
+      showError(err instanceof Error ? err.message : 'Gagal menyimpan vinyl.');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDelete = async (v: VinylRecord) => {
-    if (!window.confirm(`Hapus "${v.title}" dari koleksi permanen?`)) return;
-    await onDeleteVinyl(v.id);
-    setStatusMsg(`"${v.title}" dihapus.`);
+  const requestDeleteVinyl = (v: VinylRecord) => {
+    setConfirmState({
+      title: 'Hapus Koleksi Vinyl?',
+      description: `"${v.title}" oleh ${v.artist} akan dihapus secara permanen dari koleksi dan ruangan 3D.`,
+      confirmLabel: 'Hapus Koleksi',
+      onConfirm: async () => {
+        setBulkDeletingVinyls(true);
+        try {
+          await onDeleteVinyl(v.id);
+          setSelectedVinylIds((prev) => {
+            const next = new Set(prev);
+            next.delete(v.id);
+            return next;
+          });
+          setStatusMsg(`"${v.title}" dihapus.`);
+        } catch (err) {
+          showError(err instanceof Error ? err.message : 'Gagal menghapus vinyl.');
+        } finally {
+          setBulkDeletingVinyls(false);
+          setConfirmState(null);
+        }
+      },
+    });
   };
 
   const getThumb = (v: VinylRecord) =>
@@ -495,7 +719,23 @@ export default function VinylLibraryTab({
         </div>
       )}
 
-      {/* Top Toolbar + Release Type Filters + Genre Manager Toggle */}
+      {errorMsg && (
+        <div className="flex items-center justify-between gap-2 rounded-2xl border border-[#6E1D2C]/25 bg-[#6E1D2C]/10 px-4 py-3 text-xs font-semibold text-[#571622]">
+          <span className="inline-flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-[#6E1D2C]" />
+            {errorMsg}
+          </span>
+          <button
+            type="button"
+            onClick={() => setErrorMsg(null)}
+            className="cursor-pointer text-[#6E1D2C]/70 hover:text-[#571622]"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Top Toolbar + Release Type Filters + Bulk Delete Controls + Genre Manager */}
       <div className="space-y-3 rounded-[22px] border border-[#E5D7C3] bg-[#FAF5EC]/85 p-4 shadow-sm backdrop-blur-xl">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <input
@@ -522,7 +762,10 @@ export default function VinylLibraryTab({
 
             <button
               type="button"
-              onClick={() => setEditing(createEmptyForm(genreNames[0] || 'Indie'))}
+              onClick={() => {
+                setSelectedTrackIds(new Set());
+                setEditing(createEmptyForm(genreNames[0] || 'Indie'));
+              }}
               className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#4A2E1B] px-4 py-2 text-xs font-semibold text-[#FAF5EC] shadow-md transition hover:bg-[#3A2213]"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -531,29 +774,97 @@ export default function VinylLibraryTab({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5 border-t border-[#4A2E1B]/10 pt-3">
-          {(['ALL', ...RELEASE_TYPES] as const).map((rt) => (
-            <button
-              key={rt}
-              type="button"
-              onClick={() => setTypeFilter(rt)}
-              className={`cursor-pointer rounded-full border px-3 py-1 font-mono text-[10px] font-semibold uppercase transition ${
-                typeFilter === rt
-                  ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
-                  : 'border-[#4A2E1B]/15 bg-white/80 text-[#5C4432] hover:bg-white'
-              }`}
-            >
-              {rt === 'ALL' ? `SEMUA (${vinyls.length})` : rt}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center justify-between gap-2.5 border-t border-[#4A2E1B]/10 pt-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(['ALL', ...RELEASE_TYPES] as const).map((rt) => (
+              <button
+                key={rt}
+                type="button"
+                onClick={() => setTypeFilter(rt)}
+                className={`cursor-pointer rounded-full border px-3 py-1 font-mono text-[10px] font-semibold uppercase transition ${
+                  typeFilter === rt
+                    ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
+                    : 'border-[#4A2E1B]/15 bg-white/80 text-[#5C4432] hover:bg-white'
+                }`}
+              >
+                {rt === 'ALL' ? `SEMUA (${vinyls.length})` : rt}
+              </button>
+            ))}
+          </div>
+
+          {/* Bulk Select & Delete Controls for Vinyls */}
+          <div className="flex flex-wrap items-center gap-2">
+            {filteredVinyls.length > 0 && (
+              <button
+                type="button"
+                onClick={toggleSelectAllVinyls}
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-1.5 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3]"
+              >
+                {allFilteredVinylsSelected ? (
+                  <CheckSquare className="h-3.5 w-3.5" />
+                ) : (
+                  <Square className="h-3.5 w-3.5" />
+                )}
+                <span>{allFilteredVinylsSelected ? 'Batal Pilih Semua' : 'Pilih Semua'}</span>
+              </button>
+            )}
+
+            {selectedVinylIds.size > 0 && (
+              <button
+                type="button"
+                disabled={bulkDeletingVinyls}
+                onClick={requestBulkDeleteVinyls}
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#6E1D2C] px-3.5 py-1.5 text-xs font-semibold text-[#FAF5EC] shadow-xs transition hover:bg-[#571622] disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>
+                  {bulkDeletingVinyls
+                    ? 'Menghapus...'
+                    : `Hapus Terpilih (${selectedVinylIds.size})`}
+                </span>
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Expandable Genre Dropdown Manager */}
+        {/* Expandable Genre Dropdown Manager with Single & Bulk Delete */}
         {showGenreManager && (
           <div className="rounded-2xl border border-[#4A2E1B]/15 bg-white/88 p-4">
-            <p className="font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
-              KELOLA PILIHAN GENRE DROPDOWN (TAMBAH &amp; HAPUS)
-            </p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
+                KELOLA PILIHAN GENRE DROPDOWN (TAMBAH &amp; HAPUS SATUAN / MASSAL)
+              </p>
+
+              <div className="flex items-center gap-2">
+                {genres.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={toggleSelectAllGenres}
+                    className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#4A2E1B]/20 bg-[#FAF5EC] px-2.5 py-1 text-[10.5px] font-semibold text-[#4A2E1B] hover:bg-[#EFE4D3]"
+                  >
+                    {allGenresSelected ? (
+                      <CheckSquare className="h-3 w-3" />
+                    ) : (
+                      <Square className="h-3 w-3" />
+                    )}
+                    <span>{allGenresSelected ? 'Batal Semua' : 'Pilih Semua'}</span>
+                  </button>
+                )}
+
+                {selectedGenreIds.size > 0 && (
+                  <button
+                    type="button"
+                    disabled={genreBusy}
+                    onClick={requestBulkDeleteGenres}
+                    className="inline-flex cursor-pointer items-center gap-1 rounded-lg bg-[#6E1D2C] px-2.5 py-1 text-[10.5px] font-semibold text-[#FAF5EC] hover:bg-[#571622] disabled:opacity-50"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    <span>Hapus Terpilih ({selectedGenreIds.size})</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div className="mt-2.5 flex flex-wrap gap-2">
               <input
                 type="text"
@@ -583,44 +894,74 @@ export default function VinylLibraryTab({
               {genres.length === 0 ? (
                 <span className="text-xs text-[#7A624E]">Belum ada genre tersimpan.</span>
               ) : (
-                genres.map((g) => (
-                  <span
-                    key={g.id}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-[#4A2E1B]/18 bg-[#FAF5EC] py-1 pr-2 pl-3 font-mono text-[10.5px] font-semibold text-[#3A2213]"
-                  >
-                    <span>{g.name}</span>
-                    <button
-                      type="button"
-                      disabled={genreBusy}
-                      onClick={() => handleRemoveGenre(g)}
-                      className="flex h-4 w-4 cursor-pointer items-center justify-center rounded-full bg-[#4A2E1B]/12 text-[#4A2E1B] transition hover:bg-[#4A2E1B] hover:text-white"
-                      title={`Hapus genre ${g.name}`}
+                genres.map((g) => {
+                  const isChecked = selectedGenreIds.has(g.id);
+                  return (
+                    <span
+                      key={g.id}
+                      className={`inline-flex items-center gap-1.5 rounded-full border py-1 pr-2 pl-2.5 font-mono text-[10.5px] font-semibold transition ${
+                        isChecked
+                          ? 'border-[#4A2E1B] bg-[#EFE4D3] text-[#241A13]'
+                          : 'border-[#4A2E1B]/18 bg-[#FAF5EC] text-[#3A2213]'
+                      }`}
                     >
-                      <X className="h-2.5 w-2.5" />
-                    </button>
-                  </span>
-                ))
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => toggleGenreSelect(g.id)}
+                        aria-label={`Pilih genre ${g.name}`}
+                        className="h-3 w-3 cursor-pointer accent-[#4A2E1B]"
+                      />
+                      <span>{g.name}</span>
+                      <button
+                        type="button"
+                        disabled={genreBusy}
+                        onClick={() => requestRemoveGenre(g)}
+                        className="flex h-4 w-4 cursor-pointer items-center justify-center rounded-full bg-[#4A2E1B]/12 text-[#4A2E1B] transition hover:bg-[#6E1D2C] hover:text-white"
+                        title={`Hapus genre ${g.name}`}
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </span>
+                  );
+                })
               )}
             </div>
           </div>
         )}
       </div>
 
-      {/* Vinyl Collection Cards */}
+      {/* Vinyl Collection Cards with Bulk Checkboxes */}
       <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
         {filteredVinyls.map((v) => {
           const isOnTurntable = v.id === activeTurntableVinylId;
           const isMulti = v.releaseType !== 'Song';
+          const isSelected = selectedVinylIds.has(v.id);
+
           return (
             <article
               key={v.id}
-              className="flex gap-3.5 rounded-[22px] border border-[#E5D7C3] bg-[#FAF5EC]/85 p-4 shadow-xs backdrop-blur-lg transition hover:bg-white/95"
+              className={`flex gap-3 rounded-[22px] border p-4 shadow-xs backdrop-blur-lg transition ${
+                isSelected
+                  ? 'border-[#4A2E1B] bg-[#F3E8D7]/88 ring-1 ring-[#4A2E1B]/25'
+                  : 'border-[#E5D7C3] bg-[#FAF5EC]/85 hover:bg-white/95'
+              }`}
             >
-              <img
-                src={getThumb(v)}
-                alt={v.title}
-                className="h-20 w-20 shrink-0 rounded-xl border border-black/10 object-cover shadow-xs"
-              />
+              <div className="flex shrink-0 items-start gap-2.5">
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => toggleVinylSelect(v.id)}
+                  aria-label={`Pilih koleksi ${v.title}`}
+                  className="mt-1 h-4 w-4 cursor-pointer accent-[#4A2E1B]"
+                />
+                <img
+                  src={getThumb(v)}
+                  alt={v.title}
+                  className="h-20 w-20 shrink-0 rounded-xl border border-black/10 object-cover shadow-xs"
+                />
+              </div>
+
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="rounded-full bg-[#4A2E1B] px-2 py-0.5 font-mono text-[9px] font-semibold text-[#FAF5EC] uppercase">
@@ -673,8 +1014,9 @@ export default function VinylLibraryTab({
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleDelete(v)}
-                      className="cursor-pointer rounded-lg border border-[#4A2E1B]/12 bg-white p-1.5 text-[#8A7360] transition hover:border-[#4A2E1B]/35 hover:bg-[#4A2E1B]/10 hover:text-[#4A2E1B]"
+                      disabled={bulkDeletingVinyls}
+                      onClick={() => requestDeleteVinyl(v)}
+                      className="cursor-pointer rounded-lg border border-[#4A2E1B]/12 bg-white p-1.5 text-[#8A7360] transition hover:border-[#6E1D2C]/40 hover:bg-[#6E1D2C]/10 hover:text-[#6E1D2C] disabled:opacity-45"
                       title="Hapus vinyl"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -719,7 +1061,7 @@ export default function VinylLibraryTab({
 
               {/* Modal Scrollable Form Body */}
               <div className="orihour-scroll grid flex-1 grid-cols-1 gap-6 overflow-y-auto p-6 lg:grid-cols-12">
-                {/* Left Column: Cover Art + Disc Preview + Main Audio & Instagram-style Snippet Trimmer */}
+                {/* Left Column: Cover Art + Disc Preview + Main Audio & Snippet Trimmer */}
                 <div className="space-y-4 lg:col-span-5">
                   <div className="rounded-2xl border border-[#4A2E1B]/12 bg-white/85 p-4">
                     <p className="font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
@@ -803,7 +1145,7 @@ export default function VinylLibraryTab({
                         <button
                           type="button"
                           onClick={() => setEditing({ ...editing, coverUrl: '' })}
-                          className="cursor-pointer rounded-xl border border-[#4A2E1B]/18 bg-white px-2.5 py-2 text-xs text-[#6B5442] hover:text-[#4A2E1B]"
+                          className="cursor-pointer rounded-xl border border-[#4A2E1B]/18 bg-white px-2.5 py-2 text-xs text-[#6B5442] hover:text-[#6E1D2C]"
                           title="Hapus cover kustom"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -853,7 +1195,7 @@ export default function VinylLibraryTab({
                     </div>
                   </div>
 
-                  {/* Main Audio MP3 + Instagram-Style Snippet Trimmer */}
+                  {/* Main Audio MP3 + Draggable Snippet Trimmer */}
                   <div className="rounded-2xl border border-[#4A2E1B]/12 bg-white/85 p-4">
                     <p className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
                       <Music2 className="h-3.5 w-3.5" />
@@ -863,7 +1205,7 @@ export default function VinylLibraryTab({
                     </p>
                     <p className="mt-1 text-[11px] text-[#6B5442]">
                       {isSongMode
-                        ? 'Upload MP3, lalu pilih putar Full Song atau geser rentang snippet bebas dengan preview suara.'
+                        ? 'Upload MP3, lalu pilih putar Full Song atau geser rentang & playhead snippet bebas.'
                         : 'Opsional. Jika dikosongkan, turntable otomatis memutar lagu favorit / lagu pertama dari daftar track.'}
                     </p>
 
@@ -889,7 +1231,7 @@ export default function VinylLibraryTab({
                         <button
                           type="button"
                           onClick={() => setEditing({ ...editing, audioUrl: '' })}
-                          className="cursor-pointer rounded-xl border border-[#4A2E1B]/18 bg-white px-2.5 py-2 text-xs text-[#6B5442] hover:text-[#4A2E1B]"
+                          className="cursor-pointer rounded-xl border border-[#4A2E1B]/18 bg-white px-2.5 py-2 text-xs text-[#6B5442] hover:text-[#6E1D2C]"
                           title="Hapus file audio"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -1165,26 +1507,55 @@ export default function VinylLibraryTab({
                         </datalist>
                       </label>
 
-                      {/* Tracklist Builder */}
+                      {/* Tracklist Builder with Single & Bulk Delete */}
                       <div className="rounded-2xl border border-[#4A2E1B]/15 bg-white/85 p-4">
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
                             <p className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
                               <ListMusic className="h-3.5 w-3.5" />
                               DAFTAR LAGU ({editing.tracks.length} TRACK)
                             </p>
                             <p className="text-[11px] text-[#735D4B]">
-                              Isi semua lagu dalam {editing.releaseType} ini. Pengunjung dapat memilih &amp; memutar tiap lagu saat membuka vinyl ini.
+                              Isi semua lagu dalam {editing.releaseType} ini. Ceklis untuk menghapus beberapa lagu sekaligus.
                             </p>
                           </div>
-                          <button
-                            type="button"
-                            onClick={handleAddTrackRow}
-                            className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-xl bg-[#4A2E1B] px-3 py-1.5 text-[11px] font-semibold text-[#FAF5EC] hover:bg-[#3A2213]"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                            <span>Tambah Lagu</span>
-                          </button>
+
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {editing.tracks.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={toggleSelectAllTracks}
+                                className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-[#4A2E1B]/20 bg-[#FAF5EC] px-2.5 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#EFE4D3]"
+                              >
+                                {allTracksSelected ? (
+                                  <CheckSquare className="h-3 w-3" />
+                                ) : (
+                                  <Square className="h-3 w-3" />
+                                )}
+                                <span>{allTracksSelected ? 'Batal' : 'Pilih Semua'}</span>
+                              </button>
+                            )}
+
+                            {selectedTrackIds.size > 0 && (
+                              <button
+                                type="button"
+                                onClick={requestRemoveSelectedTracks}
+                                className="inline-flex cursor-pointer items-center gap-1 rounded-xl bg-[#6E1D2C] px-2.5 py-1.5 text-[11px] font-semibold text-[#FAF5EC] hover:bg-[#571622]"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                                <span>Hapus ({selectedTrackIds.size})</span>
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={handleAddTrackRow}
+                              className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-xl bg-[#4A2E1B] px-3 py-1.5 text-[11px] font-semibold text-[#FAF5EC] hover:bg-[#3A2213]"
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                              <span>Tambah Lagu</span>
+                            </button>
+                          </div>
                         </div>
 
                         <div className="mt-3 space-y-2.5">
@@ -1193,126 +1564,140 @@ export default function VinylLibraryTab({
                               Belum ada lagu di daftar. Klik &ldquo;Tambah Lagu&rdquo; untuk mengisi tracklist.
                             </p>
                           ) : (
-                            editing.tracks.map((trk, idx) => (
-                              <div
-                                key={trk.id}
-                                className="space-y-2.5 rounded-xl border border-[#4A2E1B]/12 bg-[#FAF5EC]/85 p-3"
-                              >
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[#4A2E1B]/12 font-mono text-[10px] font-bold text-[#4A2E1B]">
-                                    {idx + 1}
-                                  </span>
-                                  <input
-                                    type="text"
-                                    value={trk.title}
-                                    onChange={(e) =>
-                                      updateTrackRow(trk.id, { title: e.target.value })
-                                    }
-                                    placeholder={`Judul lagu #${idx + 1}`}
-                                    className="min-w-[140px] flex-1 rounded-lg border border-[#4A2E1B]/15 bg-white px-2.5 py-1.5 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
-                                  />
-                                  <input
-                                    type="text"
-                                    value={trk.duration}
-                                    onChange={(e) =>
-                                      updateTrackRow(trk.id, { duration: e.target.value })
-                                    }
-                                    placeholder="03:30"
-                                    className="w-16 rounded-lg border border-[#4A2E1B]/15 bg-white px-2 py-1.5 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
-                                  />
-
-                                  <input
-                                    ref={(el) => {
-                                      trackAudioRefs.current[trk.id] = el;
-                                    }}
-                                    type="file"
-                                    accept="audio/mpeg,audio/mp3,audio/mp4,audio/wav,audio/ogg"
-                                    className="hidden"
-                                    onChange={(e) => handleTrackAudioSelect(trk.id, e)}
-                                  />
-                                  <button
-                                    type="button"
-                                    disabled={uploadingTrackId === trk.id}
-                                    onClick={() => trackAudioRefs.current[trk.id]?.click()}
-                                    className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#4A2E1B]/20 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#EFE5D5] disabled:opacity-50"
-                                  >
-                                    <Upload className="h-3 w-3" />
-                                    <span>
-                                      {uploadingTrackId === trk.id
-                                        ? 'Upload...'
-                                        : trk.audioUrl
-                                        ? 'Ganti MP3'
-                                        : 'MP3'}
+                            editing.tracks.map((trk, idx) => {
+                              const trkSelected = selectedTrackIds.has(trk.id);
+                              return (
+                                <div
+                                  key={trk.id}
+                                  className={`space-y-2.5 rounded-xl border p-3 transition ${
+                                    trkSelected
+                                      ? 'border-[#4A2E1B] bg-[#F3E8D7]/80'
+                                      : 'border-[#4A2E1B]/12 bg-[#FAF5EC]/85'
+                                  }`}
+                                >
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={trkSelected}
+                                      onChange={() => toggleTrackSelect(trk.id)}
+                                      aria-label={`Pilih track nomor ${idx + 1}`}
+                                      className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-[#4A2E1B]"
+                                    />
+                                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[#4A2E1B]/12 font-mono text-[10px] font-bold text-[#4A2E1B]">
+                                      {idx + 1}
                                     </span>
-                                  </button>
+                                    <input
+                                      type="text"
+                                      value={trk.title}
+                                      onChange={(e) =>
+                                        updateTrackRow(trk.id, { title: e.target.value })
+                                      }
+                                      placeholder={`Judul lagu #${idx + 1}`}
+                                      className="min-w-[140px] flex-1 rounded-lg border border-[#4A2E1B]/15 bg-white px-2.5 py-1.5 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                                    />
+                                    <input
+                                      type="text"
+                                      value={trk.duration}
+                                      onChange={(e) =>
+                                        updateTrackRow(trk.id, { duration: e.target.value })
+                                      }
+                                      placeholder="03:30"
+                                      className="w-16 rounded-lg border border-[#4A2E1B]/15 bg-white px-2 py-1.5 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                                    />
 
-                                  <button
-                                    type="button"
-                                    onClick={() => removeTrackRow(trk.id)}
-                                    className="cursor-pointer rounded-lg p-1.5 text-[#8A7360] hover:bg-[#4A2E1B]/10 hover:text-[#4A2E1B]"
-                                    title="Hapus lagu ini"
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </button>
-                                </div>
-
-                                <div className="flex flex-wrap items-center justify-between gap-2 pl-8 text-[10.5px]">
-                                  <ThemedDropdown
-                                    value={trk.clipMode || 'full'}
-                                    options={CLIP_MODE_OPTIONS}
-                                    onChange={(val) =>
-                                      updateTrackRow(trk.id, {
-                                        clipMode: val as ClipMode,
-                                      })
-                                    }
-                                    ariaLabel={`Mode putar track ${idx + 1}`}
-                                    size="xs"
-                                    className="w-40"
-                                  />
-
-                                  {trk.title.trim() && (
+                                    <input
+                                      ref={(el) => {
+                                        trackAudioRefs.current[trk.id] = el;
+                                      }}
+                                      type="file"
+                                      accept="audio/mpeg,audio/mp3,audio/mp4,audio/wav,audio/ogg"
+                                      className="hidden"
+                                      onChange={(e) => handleTrackAudioSelect(trk.id, e)}
+                                    />
                                     <button
                                       type="button"
-                                      onClick={() =>
-                                        setEditing({
-                                          ...editing,
-                                          favoriteSong: trk.title.trim(),
+                                      disabled={uploadingTrackId === trk.id}
+                                      onClick={() => trackAudioRefs.current[trk.id]?.click()}
+                                      className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#4A2E1B]/20 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#EFE5D5] disabled:opacity-50"
+                                    >
+                                      <Upload className="h-3 w-3" />
+                                      <span>
+                                        {uploadingTrackId === trk.id
+                                          ? 'Upload...'
+                                          : trk.audioUrl
+                                          ? 'Ganti MP3'
+                                          : 'MP3'}
+                                      </span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => removeTrackRow(trk.id)}
+                                      className="cursor-pointer rounded-lg p-1.5 text-[#8A7360] hover:bg-[#6E1D2C]/10 hover:text-[#6E1D2C]"
+                                      title="Hapus lagu ini"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+
+                                  <div className="flex flex-wrap items-center justify-between gap-2 pl-8 text-[10.5px]">
+                                    <ThemedDropdown
+                                      value={trk.clipMode || 'full'}
+                                      options={CLIP_MODE_OPTIONS}
+                                      onChange={(val) =>
+                                        updateTrackRow(trk.id, {
+                                          clipMode: val as ClipMode,
                                         })
                                       }
-                                      className={`cursor-pointer font-mono text-[10px] font-semibold ${
-                                        editing.favoriteSong.trim().toLowerCase() ===
+                                      ariaLabel={`Mode putar track ${idx + 1}`}
+                                      size="xs"
+                                      className="w-40"
+                                    />
+
+                                    {trk.title.trim() && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setEditing({
+                                            ...editing,
+                                            favoriteSong: trk.title.trim(),
+                                          })
+                                        }
+                                        className={`cursor-pointer font-mono text-[10px] font-semibold ${
+                                          editing.favoriteSong.trim().toLowerCase() ===
+                                          trk.title.trim().toLowerCase()
+                                            ? 'text-[#7A5230] underline'
+                                            : 'text-[#8A7360] hover:text-[#4A2E1B]'
+                                        }`}
+                                      >
+                                        {editing.favoriteSong.trim().toLowerCase() ===
                                         trk.title.trim().toLowerCase()
-                                          ? 'text-[#7A5230] underline'
-                                          : 'text-[#8A7360] hover:text-[#4A2E1B]'
-                                      }`}
-                                    >
-                                      {editing.favoriteSong.trim().toLowerCase() ===
-                                      trk.title.trim().toLowerCase()
-                                        ? '★ Lagu Favorit'
-                                        : 'Jadikan Favorit'}
-                                    </button>
+                                          ? '★ Lagu Favorit'
+                                          : 'Jadikan Favorit'}
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  {trk.clipMode === 'snippet' && (
+                                    <div className="pl-8">
+                                      <SnippetTrimmer
+                                        compact
+                                        audioUrl={trk.audioUrl || undefined}
+                                        durationLabel={trk.duration}
+                                        startSec={trk.clipStartSec ?? 0}
+                                        endSec={trk.clipEndSec ?? 30}
+                                        onChange={(nextStart, nextEnd) =>
+                                          updateTrackRow(trk.id, {
+                                            clipStartSec: nextStart,
+                                            clipEndSec: nextEnd,
+                                          })
+                                        }
+                                      />
+                                    </div>
                                   )}
                                 </div>
-
-                                {trk.clipMode === 'snippet' && (
-                                  <div className="pl-8">
-                                    <SnippetTrimmer
-                                      compact
-                                      audioUrl={trk.audioUrl || undefined}
-                                      durationLabel={trk.duration}
-                                      startSec={trk.clipStartSec ?? 0}
-                                      endSec={trk.clipEndSec ?? 30}
-                                      onChange={(nextStart, nextEnd) =>
-                                        updateTrackRow(trk.id, {
-                                          clipStartSec: nextStart,
-                                          clipEndSec: nextEnd,
-                                        })
-                                      }
-                                    />
-                                  </div>
-                                )}
-                              </div>
-                            ))
+                              );
+                            })
                           )}
                         </div>
                       </div>
@@ -1378,6 +1763,19 @@ export default function VinylLibraryTab({
           onConfirm={handleConfirmCrop}
         />
       )}
+
+      {/* Orihour-Themed Confirmation Dialog */}
+      <ConfirmDialog
+        open={Boolean(confirmState)}
+        title={confirmState?.title || ''}
+        description={confirmState?.description || ''}
+        confirmLabel={confirmState?.confirmLabel || 'Hapus'}
+        busy={bulkDeletingVinyls || genreBusy}
+        onCancel={() => setConfirmState(null)}
+        onConfirm={() => {
+          if (confirmState) void confirmState.onConfirm();
+        }}
+      />
     </div>
   );
 }

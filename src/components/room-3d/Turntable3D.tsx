@@ -186,13 +186,39 @@ export default function Turntable3D({
   useEffect(() => () => prevSleeveTexture?.dispose(), [prevSleeveTexture]);
   useEffect(() => () => prevDiscTexture?.dispose(), [prevDiscTexture]);
 
-  const tonearmCurve = useMemo(() => {
-    return new THREE.CatmullRomCurve3([
+  const { tonearmCurve, restPlacement } = useMemo(() => {
+    const curve = new THREE.CatmullRomCurve3([
       new THREE.Vector3(0, 0, -0.07),
       new THREE.Vector3(0, 0, 0.12),
       new THREE.Vector3(-0.035, 0, 0.26),
       new THREE.Vector3(-0.082, 0, 0.405),
     ]);
+
+    // Compute exact contact point on the resting tonearm tube (yaw=0, pitch=0)
+    // Tonearm pitch pivot sits at turntable-local [0.34, 0.173 + 0.088 = 0.261, -0.22]
+    const pt = curve.getPoint(0.64);
+    const tan = curve.getTangent(0.64).normalize();
+    const tubeCenterX = 0.34 + pt.x;
+    const tubeCenterY = 0.261 + pt.y;
+    const tubeCenterZ = -0.22 + pt.z;
+    const cradleYaw = Math.atan2(tan.x, tan.z);
+
+    // Deck top is at Y = 0.173; bottom of cradle ring sits right below tube bottom (tubeCenterY - 0.008)
+    const deckTopY = 0.173;
+    const cradleBottomY = tubeCenterY - 0.0125;
+    const postHeight = Math.max(0.02, cradleBottomY - deckTopY);
+
+    return {
+      tonearmCurve: curve,
+      restPlacement: {
+        x: tubeCenterX,
+        y: tubeCenterY,
+        z: tubeCenterZ,
+        yaw: cradleYaw,
+        postCenterY: deckTopY + postHeight * 0.5,
+        postHeight,
+      },
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -252,7 +278,6 @@ export default function Turntable3D({
       transferProgress.current += dt / 2.45;
       const t = Math.min(1, transferProgress.current);
 
-      // Dynamically track the exact backmost rack slot world coordinates for ANY rack size (1..6)
       if (returnSlotTargetRef?.current) {
         math.rackBackSlotPos.copy(returnSlotTargetRef.current);
         math.rackBackAbovePos.set(
@@ -432,8 +457,6 @@ export default function Turntable3D({
       if (t >= 1) {
         transferCompletedRef.current = true;
         spinningDiscRef.current.rotation.y = -Math.PI * 0.5;
-        // Keep returningSleeveRef parked cleanly at rackBackSlotPos until React unmounts it
-        // in the exact same commit that VinylCrate3D unhides RackSleeveItem (zero blink / jump!)
         if (returningSleeveRef.current && previousVinyl) {
           returningSleeveRef.current.position.copy(math.rackBackSlotPos);
           returningSleeveRef.current.quaternion.copy(math.startSleeveQuat);
@@ -457,11 +480,22 @@ export default function Turntable3D({
         (targetYaw - tonearmYawRef.current.rotation.y) * dt * 6.5;
     }
 
+    // Tonearm lifts smoothly during travel, drops onto record when playing,
+    // and seats straight down into the U-cradle rest (pitch = 0) when parked!
     if (tonearmPitchRef.current && tonearmYawRef.current) {
-      const overGrooves = tonearmYawRef.current.rotation.y < -0.35;
-      const targetPitch = activeSpin && overGrooves ? 0.019 : -0.055;
+      const yaw = tonearmYawRef.current.rotation.y;
+      const overGrooves = yaw < -0.35;
+      const parkedOverRest = Math.abs(yaw) < 0.045;
+
+      let targetPitch = -0.055; // Lifted while swinging across platter edge
+      if (activeSpin && overGrooves) {
+        targetPitch = 0.019; // Dropped cleanly onto vinyl grooves
+      } else if (!activeSpin && parkedOverRest) {
+        targetPitch = 0.0; // Seated snugly inside the tonearm U-cradle rest
+      }
+
       tonearmPitchRef.current.rotation.x +=
-        (targetPitch - tonearmPitchRef.current.rotation.x) * dt * 7.0;
+        (targetPitch - tonearmPitchRef.current.rotation.x) * dt * 7.5;
     }
   });
 
@@ -541,12 +575,45 @@ export default function Turntable3D({
           </mesh>
         </group>
 
-        <mesh position={[0.29, 0.202, 0.07]} castShadow>
-          <cylinderGeometry args={[0.011, 0.013, 0.058, 12]} />
-          <meshStandardMaterial color="#2C303A" roughness={0.4} metalness={0.6} />
-        </mesh>
+        {/* Precision-Aligned Tonearm Rest Pillar + U-Cradle Clip (Zero Floating Gap!) */}
+        <group position={[restPlacement.x, 0, restPlacement.z]}>
+          {/* Base Flange on Deck */}
+          <mesh position={[0, 0.177, 0]} castShadow>
+            <cylinderGeometry args={[0.018, 0.021, 0.008, 16]} />
+            <meshStandardMaterial color="#23262E" roughness={0.38} metalness={0.65} />
+          </mesh>
+          {/* Vertical Support Post reaching straight up to the cradle */}
+          <mesh position={[0, restPlacement.postCenterY, 0]} castShadow>
+            <cylinderGeometry args={[0.0085, 0.0115, restPlacement.postHeight, 14]} />
+            <meshStandardMaterial color="#282C36" roughness={0.36} metalness={0.68} />
+          </mesh>
+          {/* Brushed-Brass Accent Collar */}
+          <mesh position={[0, restPlacement.y - 0.016, 0]}>
+            <cylinderGeometry args={[0.011, 0.011, 0.006, 16]} />
+            <meshStandardMaterial color="#C89B54" roughness={0.28} metalness={0.86} />
+          </mesh>
+          {/* U-Shaped Cradle Clip aligned with the exact S-curve tube angle */}
+          <group
+            position={[0, restPlacement.y, 0]}
+            rotation={[0, restPlacement.yaw, 0]}
+          >
+            <mesh rotation={[0, 0, Math.PI]} castShadow>
+              <torusGeometry args={[0.011, 0.0032, 12, 24, Math.PI]} />
+              <meshStandardMaterial color="#1C1F26" roughness={0.42} metalness={0.55} />
+            </mesh>
+            {/* Outer retaining ear tips */}
+            <mesh position={[-0.011, 0.004, 0]}>
+              <boxGeometry args={[0.0055, 0.008, 0.01]} />
+              <meshStandardMaterial color="#1C1F26" roughness={0.42} metalness={0.55} />
+            </mesh>
+            <mesh position={[0.011, 0.004, 0]}>
+              <boxGeometry args={[0.0055, 0.008, 0.01]} />
+              <meshStandardMaterial color="#1C1F26" roughness={0.42} metalness={0.55} />
+            </mesh>
+          </group>
+        </group>
 
-        {/* Chrome S-Tonearm Assembly with Deep Dark Maroon Headshell (#4D0F18) */}
+        {/* Chrome S-Tonearm Assembly with Dark Espresso Brown Headshell (#3B2314) */}
         <group ref={tonearmYawRef} position={[0.34, 0.173, -0.22]}>
           <mesh position={[0, 0.024, 0]} castShadow>
             <cylinderGeometry args={[0.052, 0.06, 0.048, 20]} />
@@ -563,14 +630,20 @@ export default function Turntable3D({
               <meshStandardMaterial color="#D8DEE9" roughness={0.2} metalness={0.9} />
             </mesh>
             <mesh castShadow>
-              <tubeGeometry args={[tonearmCurve, 22, 0.008, 10, false]} />
+              <tubeGeometry args={[tonearmCurve, 24, 0.008, 12, false]} />
               <meshStandardMaterial color="#ECEFF4" roughness={0.16} metalness={0.95} />
             </mesh>
-            {/* Dark Maroon Headshell (#4D0F18) */}
-            <mesh position={[-0.088, -0.004, 0.422]} rotation={[0, -0.28, 0]} castShadow>
-              <boxGeometry args={[0.032, 0.014, 0.064]} />
-              <meshStandardMaterial color="#4D0F18" roughness={0.34} metalness={0.18} />
-            </mesh>
+            {/* Dark Espresso Brown Headshell (#3B2314) + Brushed Brass Finger Lift */}
+            <group position={[-0.088, -0.004, 0.422]} rotation={[0, -0.28, 0]}>
+              <mesh castShadow>
+                <boxGeometry args={[0.032, 0.014, 0.064]} />
+                <meshStandardMaterial color="#3B2314" roughness={0.36} metalness={0.18} />
+              </mesh>
+              <mesh position={[0.022, 0.002, 0.006]} rotation={[0, 0, 0.25]}>
+                <boxGeometry args={[0.018, 0.003, 0.007]} />
+                <meshStandardMaterial color="#C89B54" roughness={0.26} metalness={0.88} />
+              </mesh>
+            </group>
             <mesh position={[-0.091, -0.016, 0.432]} rotation={[0, -0.28, 0]}>
               <boxGeometry args={[0.022, 0.014, 0.034]} />
               <meshStandardMaterial color="#18181B" roughness={0.4} metalness={0.4} />

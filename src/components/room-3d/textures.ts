@@ -11,7 +11,6 @@ import {
 const sleeveDataUrlCache = new Map<string, string>();
 const corsImageCache = new Map<string, Promise<HTMLImageElement | null>>();
 
-// Singleton caches prevent redundant CPU canvas generation across 3D components (eliminates startup lag)
 let cachedWalnutPbr: PbrMaterialMaps | null = null;
 let cachedLeatherPbr: PbrMaterialMaps | null = null;
 let cachedPlasterPbr: { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture } | null = null;
@@ -25,6 +24,8 @@ let cachedDriftingLeafTex: THREE.CanvasTexture | null = null;
 let cachedSunTex: THREE.CanvasTexture | null = null;
 let cachedMoonTex: THREE.CanvasTexture | null = null;
 let cachedSoftShadowTex: THREE.CanvasTexture | null = null;
+let cachedCoffeeTex: THREE.CanvasTexture | null = null;
+let cachedSteamWispTex: THREE.CanvasTexture | null = null;
 const cachedCloudTexMap = new Map<number, THREE.CanvasTexture>();
 
 export interface PbrMaterialMaps {
@@ -212,6 +213,118 @@ export function createLeatherPbr(): PbrMaterialMaps {
   return cachedLeatherPbr;
 }
 
+export function createCoffeeSurfaceTexture(): THREE.CanvasTexture {
+  if (cachedCoffeeTex) return cachedCoffeeTex;
+
+  const size = 256;
+  const cx = size * 0.5;
+  const cy = size * 0.5;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+
+  const baseGrad = ctx.createRadialGradient(cx - 8, cy - 6, 12, cx, cy, 128);
+  baseGrad.addColorStop(0.0, '#221008');
+  baseGrad.addColorStop(0.45, '#331A0D');
+  baseGrad.addColorStop(0.76, '#5E341B');
+  baseGrad.addColorStop(0.91, '#9A6238');
+  baseGrad.addColorStop(0.97, '#C48F5C');
+  baseGrad.addColorStop(1.0, '#7C4B28');
+  ctx.fillStyle = baseGrad;
+  ctx.fillRect(0, 0, size, size);
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  for (let i = 0; i < 6; i++) {
+    ctx.rotate(0.95);
+    const swirlGrad = ctx.createLinearGradient(-70, -25, 70, 25);
+    swirlGrad.addColorStop(0, 'rgba(182, 126, 76, 0)');
+    swirlGrad.addColorStop(0.5, 'rgba(182, 126, 76, 0.22)');
+    swirlGrad.addColorStop(1, 'rgba(182, 126, 76, 0)');
+    ctx.strokeStyle = swirlGrad;
+    ctx.lineWidth = 7 + (i % 3) * 3;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(0, 0, 42 + i * 11, 0.15, 2.25);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  for (let i = 0; i < 160; i++) {
+    const angle = (i * 2.39996) % (Math.PI * 2);
+    const radius = 84 + ((i * 19) % 38);
+    const x = cx + Math.cos(angle) * radius;
+    const y = cy + Math.sin(angle) * radius;
+    const r = 1.1 + (i % 3) * 0.75;
+    ctx.fillStyle =
+      i % 2 === 0 ? 'rgba(224, 186, 142, 0.34)' : 'rgba(136, 84, 48, 0.32)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const gloss = ctx.createRadialGradient(cx - 32, cy - 28, 2, cx - 32, cy - 28, 52);
+  gloss.addColorStop(0, 'rgba(255, 236, 206, 0.16)');
+  gloss.addColorStop(1, 'rgba(255, 236, 206, 0)');
+  ctx.fillStyle = gloss;
+  ctx.fillRect(0, 0, size, size);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  cachedCoffeeTex = tex;
+  return tex;
+}
+
+// Organic Soft Wispy Steam Texture (Zero Hard Geometric Edges — For Realistic Coffee Steam Sprites)
+export function createSteamWispTexture(): THREE.CanvasTexture {
+  if (cachedSteamWispTex) return cachedSteamWispTex;
+
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, size, size);
+
+  // Soft overlapping curling vapor puffs fading seamlessly to 0 before the borders
+  const puffs = [
+    { x: 64, y: 66, r: 42, a: 0.24 },
+    { x: 52, y: 54, r: 32, a: 0.2 },
+    { x: 76, y: 50, r: 30, a: 0.18 },
+    { x: 60, y: 38, r: 26, a: 0.16 },
+    { x: 70, y: 80, r: 28, a: 0.17 },
+    { x: 56, y: 74, r: 24, a: 0.14 },
+  ];
+
+  for (const p of puffs) {
+    const g = ctx.createRadialGradient(p.x, p.y, 1, p.x, p.y, p.r);
+    g.addColorStop(0.0, `rgba(255, 248, 238, ${p.a})`);
+    g.addColorStop(0.45, `rgba(255, 246, 235, ${p.a * 0.45})`);
+    g.addColorStop(1.0, 'rgba(255, 246, 235, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Soft circular edge mask to guarantee zero visible square sprite bounds
+  ctx.globalCompositeOperation = 'destination-in';
+  const mask = ctx.createRadialGradient(64, 64, 16, 64, 64, 60);
+  mask.addColorStop(0, 'rgba(255,255,255,1)');
+  mask.addColorStop(0.7, 'rgba(255,255,255,0.55)');
+  mask.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = mask;
+  ctx.fillRect(0, 0, size, size);
+  ctx.globalCompositeOperation = 'source-over';
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  cachedSteamWispTex = tex;
+  return tex;
+}
+
 export function createWalletCoverTexture(brandText = 'ORIHOUR'): THREE.CanvasTexture {
   const w = 512;
   const h = 400;
@@ -335,7 +448,6 @@ export function createIdentityCardTexture(
     ctx.stroke();
   }
 
-  // Keep wallet ID card header stripe in original Burgundy as requested
   ctx.fillStyle = '#1B1410';
   ctx.fillRect(0, 0, w, 84);
   ctx.fillStyle = '#842536';
@@ -618,15 +730,18 @@ export function createPlasterWallPbr(): { map: THREE.CanvasTexture; bumpMap: THR
 export function createMaroonRugPbr(): { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture } {
   if (cachedMaroonRugPbr) return cachedMaroonRugPbr;
 
-  const w = 1024;
-  const h = 768;
   const cCanvas = document.createElement('canvas');
   const bCanvas = document.createElement('canvas');
-  cCanvas.width = bCanvas.width = w;
-  cCanvas.height = bCanvas.height = h;
+  cCanvas.width = bCanvas.width = 512;
+  cCanvas.height = bCanvas.height = 384;
 
   const ctx = cCanvas.getContext('2d')!;
   const bCtx = bCanvas.getContext('2d')!;
+  ctx.scale(0.5, 0.5);
+  bCtx.scale(0.5, 0.5);
+
+  const w = 1024;
+  const h = 768;
 
   ctx.fillStyle = '#5C1622';
   ctx.fillRect(0, 0, w, h);
@@ -740,11 +855,11 @@ export function createMaroonRugPbr(): { map: THREE.CanvasTexture; bumpMap: THREE
 
   bCtx.fillStyle = '#808080';
   bCtx.fillRect(0, 0, w, h);
-  for (let y = 0; y < h; y += 4) {
-    ctx.fillStyle = y % 8 === 0 ? 'rgba(20, 8, 6, 0.08)' : 'rgba(255, 220, 210, 0.03)';
-    ctx.fillRect(0, y, w, 1.5);
-    bCtx.fillStyle = y % 8 === 0 ? '#626262' : '#9B9B9B';
-    bCtx.fillRect(0, y, w, 1.5);
+  for (let y = 0; y < h; y += 6) {
+    ctx.fillStyle = y % 12 === 0 ? 'rgba(20, 8, 6, 0.08)' : 'rgba(255, 220, 210, 0.03)';
+    ctx.fillRect(0, y, w, 2);
+    bCtx.fillStyle = y % 12 === 0 ? '#626262' : '#9B9B9B';
+    bCtx.fillRect(0, y, w, 2);
   }
 
   const map = new THREE.CanvasTexture(cCanvas);
@@ -772,10 +887,6 @@ function fitTextEllipsis(
   return out.trimEnd() + '...';
 }
 
-/**
- * Character-aware safe line wrapper: handles both normal sentences AND unbroken long strings
- * with zero spaces so text NEVER overflows or pierces postcard / journal boundaries.
- */
 function wrapTextSafe(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -786,7 +897,6 @@ function wrapTextSafe(
   maxLines: number
 ): number {
   const rawWords = text.split(/\s+/).filter(Boolean);
-  // Pre-split any single word wider than maxWidth into safe chunks
   const tokens: string[] = [];
   for (const word of rawWords) {
     if (ctx.measureText(word).width <= maxWidth) {
@@ -882,7 +992,22 @@ export function createCorkboardTexture(): { map: THREE.CanvasTexture; bumpMap: T
   return cachedCorkboardPbr;
 }
 
-// Strictly clipped & character-wrapped visitor postcard (ZERO overflow even at max character count!)
+function formatPostcardDateOnly(postcard: GuestbookPostcard): string {
+  if (postcard.createdAt) {
+    const d = new Date(postcard.createdAt);
+    if (!Number.isNaN(d.getTime())) {
+      return d
+        .toLocaleDateString('en-GB', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+        })
+        .toUpperCase();
+    }
+  }
+  return (postcard.dateLabel || '').toUpperCase();
+}
+
 export function createPostcardTexture(postcard: GuestbookPostcard): THREE.CanvasTexture {
   const w = 512;
   const h = 360;
@@ -903,7 +1028,6 @@ export function createPostcardTexture(postcard: GuestbookPostcard): THREE.Canvas
   ctx.lineWidth = 4;
   ctx.strokeRect(14, 14, w - 28, h - 28);
 
-  // Strict inner clipping box so no glyph can ever bleed outside the archival card border
   ctx.save();
   ctx.beginPath();
   ctx.rect(22, 22, w - 44, h - 44);
@@ -916,7 +1040,6 @@ export function createPostcardTexture(postcard: GuestbookPostcard): THREE.Canvas
   ctx.font = 'bold 13px monospace';
   ctx.fillText(postcard.isPinned ? 'CURATOR PINNED NOTE' : 'VISITOR POSTCARD', 28, 56);
 
-  // Stamp box at top-right
   ctx.strokeStyle = accent;
   ctx.lineWidth = 2.5;
   ctx.strokeRect(w - 94, 28, 66, 74);
@@ -957,9 +1080,9 @@ export function createPostcardTexture(postcard: GuestbookPostcard): THREE.Canvas
 
   ctx.fillStyle = '#7A6858';
   ctx.font = 'bold 13.5px monospace';
-  ctx.fillText(fitTextEllipsis(ctx, `FROM: ${safeSender.toUpperCase()}`, 290), 28, h - 28);
+  ctx.fillText(fitTextEllipsis(ctx, `FROM: ${safeSender.toUpperCase()}`, 265), 28, h - 28);
   ctx.textAlign = 'right';
-  ctx.fillText(postcard.dateLabel.toUpperCase(), w - 28, h - 28);
+  ctx.fillText(formatPostcardDateOnly(postcard), w - 28, h - 28);
   ctx.textAlign = 'left';
 
   ctx.restore();
@@ -970,7 +1093,6 @@ export function createPostcardTexture(postcard: GuestbookPostcard): THREE.Canvas
   return tex;
 }
 
-// Archival Listening Journal Texture (Espresso & Cream Typography + Song vs Album/EP/Single awareness)
 export function createNotepadTexture(
   vinyl: VinylRecord | null,
   isPlaying: boolean
@@ -996,7 +1118,7 @@ export function createNotepadTexture(
   ctx.fillStyle = spineShadow;
   ctx.fillRect(0, 0, 54, h);
 
-  for (let i = 0; i < 1800; i++) {
+  for (let i = 0; i < 1600; i++) {
     const x = (Math.sin(i * 19.31 + 1.1) * 0.5 + 0.5) * w;
     const y = (Math.cos(i * 53.77 + 2.7) * 0.5 + 0.5) * h;
     ctx.fillStyle = i % 2 === 0 ? 'rgba(92, 68, 48, 0.035)' : 'rgba(255, 252, 246, 0.05)';
@@ -1096,14 +1218,13 @@ export function createNotepadTexture(
       isSong && vinyl.album ? `${vinyl.artist} - ${vinyl.album}` : vinyl.artist;
     y = wrapTextSafe(ctx, subline, 78, y + 6, w - 156, 34, 2);
 
-    y += 32;
+    y += 30;
+    const sectionHeaderY = y;
     ctx.fillStyle = '#4A2E1B';
     ctx.font = 'bold 15px monospace';
-    ctx.fillText(isSong ? 'FAVORITE LYRIC' : 'FAVORITE SONG', 78, y);
+    ctx.fillText(isSong ? 'FAVORITE LYRIC' : 'FAVORITE SONG', 78, sectionHeaderY);
 
-    ctx.fillStyle = '#4A2E1B';
-    ctx.fillRect(78, y + 18, 4, isSong ? 112 : 66);
-
+    const quoteTopY = sectionHeaderY + 46;
     ctx.fillStyle = '#241D18';
     ctx.font = 'italic 29px Georgia, serif';
     const highlightText = isSong
@@ -1111,12 +1232,25 @@ export function createNotepadTexture(
         ? `"${vinyl.favoriteLyric}"`
         : '"-"'
       : vinyl.favoriteSong || vinyl.tracks?.[0]?.title || '-';
-    y = wrapTextSafe(ctx, highlightText, 102, y + 48, w - 180, 44, isSong ? 3 : 2);
+    const afterQuoteY = wrapTextSafe(
+      ctx,
+      highlightText,
+      102,
+      quoteTopY,
+      w - 180,
+      44,
+      isSong ? 3 : 2
+    );
 
-    y += 34;
+    const barTop = quoteTopY - 26;
+    const barBottom = Math.max(barTop + 30, afterQuoteY - 32);
+    ctx.fillStyle = '#4A2E1B';
+    ctx.fillRect(78, barTop, 4, barBottom - barTop);
+
+    const notesHeaderY = afterQuoteY + 26;
     ctx.fillStyle = '#4A2E1B';
     ctx.font = 'bold 15px monospace';
-    ctx.fillText('CURATOR NOTES', 78, y);
+    ctx.fillText('CURATOR NOTES', 78, notesHeaderY);
 
     ctx.fillStyle = '#312923';
     ctx.font = '25px Georgia, serif';
@@ -1124,7 +1258,7 @@ export function createNotepadTexture(
       ctx,
       vinyl.linerNotes || 'Curator notes have not been written for this pressing yet.',
       78,
-      y + 42,
+      notesHeaderY + 42,
       w - 156,
       44,
       6
@@ -1145,7 +1279,7 @@ export function renderSleeveCanvas(
   vinyl: VinylRecord,
   coverImg?: HTMLImageElement | null
 ): HTMLCanvasElement {
-  const size = coverImg ? 1024 : 512;
+  const size = coverImg ? 768 : 512;
   const s = size / 512;
   const canvas = document.createElement('canvas');
   canvas.width = size;
@@ -1280,7 +1414,7 @@ export function renderSleeveCanvas(
 
 export function getSleeveDataUrl(vinyl: VinylRecord): string {
   if (vinyl.coverUrl) return vinyl.coverUrl;
-  const key = `${vinyl.id}_${vinyl.title}_${vinyl.artist}_${vinyl.releaseYear}_${vinyl.labelColor}_${vinyl.artStyle}_${vinyl.showCoverOverlay}_v4`;
+  const key = `${vinyl.id}_${vinyl.title}_${vinyl.artist}_${vinyl.releaseYear}_${vinyl.labelColor}_${vinyl.artStyle}_${vinyl.showCoverOverlay}_v5`;
   if (!sleeveDataUrlCache.has(key)) {
     sleeveDataUrlCache.set(key, renderSleeveCanvas(vinyl).toDataURL('image/jpeg', 0.9));
   }
@@ -1372,6 +1506,7 @@ export function createVinylDiscTexture(vinyl: VinylRecord): THREE.CanvasTexture 
   return tex;
 }
 
+// Mid-Century Warm Backlit Split-Flip Chronometer Face
 export function drawFlipClockFace(
   canvas: HTMLCanvasElement,
   hourDecimal: number,
@@ -1386,37 +1521,80 @@ export function drawFlipClockFace(
   const hh = String(Math.floor(totalMins / 60)).padStart(2, '0');
   const mm = String(totalMins % 60).padStart(2, '0');
 
-  ctx.fillStyle = '#111318';
+  const cavityGrad = ctx.createLinearGradient(0, 0, 0, h);
+  cavityGrad.addColorStop(0, '#1B120C');
+  cavityGrad.addColorStop(0.5, '#251911');
+  cavityGrad.addColorStop(1, '#160E09');
+  ctx.fillStyle = cavityGrad;
   ctx.fillRect(0, 0, w, h);
 
-  ctx.fillStyle = '#1D212B';
-  ctx.beginPath();
-  ctx.roundRect(24, 34, 212, 168, 16);
-  ctx.roundRect(276, 34, 212, 168, 16);
-  ctx.fill();
-
-  ctx.fillStyle = '#F8F6F0';
-  ctx.font = 'bold 116px monospace';
+  ctx.fillStyle = '#DFBA74';
+  ctx.font = 'bold 12px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(hh, 130, 122);
-  ctx.fillText(mm, 382, 122);
+  ctx.fillText('ORIHOUR · CHRONOMETER', w * 0.5, 20);
 
-  ctx.fillStyle = '#0A0B0E';
-  ctx.fillRect(24, 116, 212, 4);
-  ctx.fillRect(276, 116, 212, 4);
+  const drawFlipTile = (x: number, y: number, tw: number, th: number, digits: string) => {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.beginPath();
+    ctx.roundRect(x + 2, y + 4, tw, th, 14);
+    ctx.fill();
 
-  ctx.font = 'bold 18px monospace';
-  ctx.fillStyle = isLive ? '#34D399' : '#D4AA63';
+    const tileGrad = ctx.createLinearGradient(0, y, 0, y + th);
+    tileGrad.addColorStop(0.0, '#FFF8EC');
+    tileGrad.addColorStop(0.48, '#F6EAD5');
+    tileGrad.addColorStop(0.52, '#ECDCBF');
+    tileGrad.addColorStop(1.0, '#DFCAAB');
+    ctx.fillStyle = tileGrad;
+    ctx.beginPath();
+    ctx.roundRect(x, y, tw, th, 14);
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(74, 46, 27, 0.32)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.fillStyle = '#1E130B';
+    ctx.font = 'bold 112px Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(digits, x + tw * 0.5, y + th * 0.52);
+
+    const splitY = y + th * 0.5;
+    ctx.fillStyle = '#1A110B';
+    ctx.fillRect(x, splitY - 2.2, tw, 4.4);
+
+    const creaseShade = ctx.createLinearGradient(0, splitY + 2, 0, splitY + 15);
+    creaseShade.addColorStop(0, 'rgba(28, 18, 12, 0.25)');
+    creaseShade.addColorStop(1, 'rgba(28, 18, 12, 0)');
+    ctx.fillStyle = creaseShade;
+    ctx.fillRect(x + 2, splitY + 2, tw - 4, 13);
+
+    ctx.fillStyle = '#C89B54';
+    ctx.fillRect(x - 2, splitY - 12, 8, 24);
+    ctx.fillRect(x + tw - 6, splitY - 12, 8, 24);
+  };
+
+  drawFlipTile(28, 36, 206, 162, hh);
+  drawFlipTile(278, 36, 206, 162, mm);
+
+  ctx.fillStyle = '#E6C07B';
+  ctx.beginPath();
+  ctx.arc(w * 0.5, 95, 5.5, 0, Math.PI * 2);
+  ctx.arc(w * 0.5, 139, 5.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.font = 'bold 15px monospace';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = isLive ? '#6EE7B7' : '#F3C982';
   ctx.textAlign = 'left';
-  ctx.fillText(isLive ? '● LIVE' : '◐ SCRUB', 28, 228);
+  ctx.fillText(isLive ? '● LIVE' : '◐ SCRUB', 30, 226);
 
-  ctx.fillStyle = '#94A3B8';
+  ctx.fillStyle = '#E2CEB4';
   ctx.textAlign = 'right';
-  ctx.fillText(phaseLabel, w - 28, 228);
+  ctx.fillText(phaseLabel.toUpperCase(), w - 30, 226);
 }
 
-// Wall Plaque Banner: center diamond dot updated to deep dark maroon (#4D0F18)
 export function createWallPlaqueTexture(config: RoomConfig): THREE.CanvasTexture {
   const w = 1200;
   const h = 250;
@@ -1481,7 +1659,6 @@ export function createWallPlaqueTexture(config: RoomConfig): THREE.CanvasTexture
   ctx.lineTo(w * 0.5 + 195, ruleY);
   ctx.stroke();
 
-  // Deep dark maroon diamond ornament between ORIHOUR and subtitle
   ctx.fillStyle = '#4D0F18';
   ctx.beginPath();
   ctx.moveTo(w * 0.5, ruleY - 6);
@@ -1579,7 +1756,6 @@ export function createPosterFallbackTexture(poster: PosterItem): THREE.CanvasTex
   return tex;
 }
 
-// Fast Seamless Periodically Wrapped Meadow PBR (Cached singleton, ~75% faster startup!)
 export function createMeadowPbr(): { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture } {
   if (cachedMeadowPbr) return cachedMeadowPbr;
 
@@ -1774,10 +1950,11 @@ export function createGrassClumpTexture(): THREE.CanvasTexture {
   return tex;
 }
 
+// Natural Organic Fissured Oak/Maple Bark PBR (Zero Artificial Vertical Barcode Stripes)
 export function createBarkPbr(): { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture } {
   if (cachedBarkPbr) return cachedBarkPbr;
 
-  const size = 256;
+  const size = 512;
   const cCanvas = document.createElement('canvas');
   const bCanvas = document.createElement('canvas');
   cCanvas.width = bCanvas.width = size;
@@ -1786,55 +1963,187 @@ export function createBarkPbr(): { map: THREE.CanvasTexture; bumpMap: THREE.Canv
   const ctx = cCanvas.getContext('2d')!;
   const bCtx = bCanvas.getContext('2d')!;
 
-  ctx.fillStyle = '#4B3A2C';
+  const hash = (n: number) => {
+    const s = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
+    return s - Math.floor(s);
+  };
+
+  // Warm deep weathered oak base
+  ctx.fillStyle = '#3C2E24';
   ctx.fillRect(0, 0, size, size);
-  bCtx.fillStyle = '#808080';
+  bCtx.fillStyle = '#6A6A6A';
   bCtx.fillRect(0, 0, size, size);
 
-  for (let i = 0; i < 40; i++) {
-    const x = (i * 97) % size;
-    const y = (i * 151) % size;
-    const r = 10 + (i % 18);
-    const g = ctx.createRadialGradient(x, y, 2, x, y, r);
-    g.addColorStop(0, i % 3 === 0 ? 'rgba(78, 92, 60, 0.24)' : 'rgba(32, 22, 16, 0.28)');
-    g.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
+  // Helper to draw seamlessly tiled organic shapes across canvas edges
+  const drawWrappedPlate = (
+    cx: number,
+    cy: number,
+    rw: number,
+    rh: number,
+    tilt: number,
+    fillColor: string,
+    edgeColor: string,
+    bumpVal: number
+  ) => {
+    for (let ox = -1; ox <= 1; ox++) {
+      const px = cx + ox * size;
+      if (px + rw * 2 < 0 || px - rw * 2 > size) continue;
+      for (let oy = -1; oy <= 1; oy++) {
+        const py = cy + oy * size;
+        if (py + rh * 2 < 0 || py - rh * 2 > size) continue;
+
+        const drawPath = (targetCtx: CanvasRenderingContext2D) => {
+          targetCtx.save();
+          targetCtx.translate(px, py);
+          targetCtx.rotate(tilt);
+          targetCtx.beginPath();
+          targetCtx.moveTo(0, -rh);
+          targetCtx.bezierCurveTo(rw * 0.9, -rh * 0.65, rw * 1.05, rh * 0.45, rw * 0.15, rh);
+          targetCtx.bezierCurveTo(-rw * 0.85, rh * 0.72, -rw * 1.0, -rh * 0.4, 0, -rh);
+          targetCtx.closePath();
+        };
+
+        drawPath(ctx);
+        ctx.fillStyle = fillColor;
+        ctx.fill();
+        ctx.strokeStyle = edgeColor;
+        ctx.lineWidth = 2.2;
+        ctx.stroke();
+        ctx.restore();
+
+        drawPath(bCtx);
+        const bv = Math.max(60, Math.min(205, bumpVal));
+        bCtx.fillStyle = `rgb(${bv},${bv},${bv})`;
+        bCtx.fill();
+        bCtx.strokeStyle = '#3B3B3B';
+        bCtx.lineWidth = 2.6;
+        bCtx.stroke();
+        bCtx.restore();
+      }
+    }
+  };
+
+  // 1. Overlapping organic weathered bark plates (varied sizes, natural muted tones)
+  const platePalette = [
+    '#4A3B2F',
+    '#534336',
+    '#43352A',
+    '#5A4A3C',
+    '#3E3026',
+    '#4E4034',
+    '#57483B',
+  ];
+
+  for (let i = 0; i < 210; i++) {
+    const x = hash(i * 1.73 + 0.4) * size;
+    const y = hash(i * 2.91 + 1.8) * size;
+    const rw = 10 + hash(i * 4.17 + 0.9) * 18;
+    const rh = 34 + hash(i * 5.63 + 2.1) * 58;
+    const tilt = (hash(i * 7.21 + 3.3) - 0.5) * 0.22;
+    const fillCol = platePalette[Math.floor(hash(i * 9.13) * platePalette.length)];
+    const bumpVal = 118 + Math.round(hash(i * 11.41) * 48);
+
+    drawWrappedPlate(
+      x,
+      y,
+      rw,
+      rh,
+      tilt,
+      fillCol,
+      'rgba(24, 17, 12, 0.44)',
+      bumpVal
+    );
   }
 
-  for (let x = 0; x < size; x += 3) {
-    const wobble = Math.sin(x * 0.24) * 6;
-    const isCrevice = x % 9 === 0;
-    ctx.strokeStyle = isCrevice
-      ? 'rgba(24, 16, 11, 0.72)'
-      : x % 6 === 0
-      ? 'rgba(116, 94, 74, 0.34)'
-      : 'rgba(66, 49, 36, 0.42)';
-    ctx.lineWidth = isCrevice ? 2.4 : 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.bezierCurveTo(x + wobble, 85, x - wobble, 170, x, size);
-    ctx.stroke();
+  // 2. Irregular organic wandering bark furrows (non-periodic, natural branching crevices)
+  for (let i = 0; i < 48; i++) {
+    let x = hash(i * 3.17 + 7.2) * size;
+    let y = hash(i * 6.41 + 1.5) * size;
+    const steps = 6 + Math.floor(hash(i * 8.11) * 7);
+    const width = 1.6 + hash(i * 2.59) * 2.6;
 
-    bCtx.strokeStyle = isCrevice ? '#282828' : '#C2C2C2';
-    bCtx.lineWidth = isCrevice ? 2.6 : 1.5;
-    bCtx.beginPath();
-    bCtx.moveTo(x, 0);
-    bCtx.bezierCurveTo(x + wobble, 85, x - wobble, 170, x, size);
-    bCtx.stroke();
+    const pts: { x: number; y: number }[] = [{ x, y }];
+    for (let s = 1; s <= steps; s++) {
+      x += (hash(i * 19.3 + s * 4.7) - 0.5) * 16;
+      y += 14 + hash(i * 13.7 + s * 6.1) * 20;
+      pts.push({ x, y });
+    }
+
+    for (let ox = -1; ox <= 1; ox++) {
+      for (let oy = -1; oy <= 1; oy++) {
+        ctx.strokeStyle = 'rgba(22, 15, 10, 0.56)';
+        ctx.lineWidth = width;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        pts.forEach((pt, idx) => {
+          const px = pt.x + ox * size;
+          const py = pt.y + oy * size;
+          if (idx === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+
+        bCtx.strokeStyle = 'rgba(42, 42, 42, 0.65)';
+        bCtx.lineWidth = width + 0.8;
+        bCtx.lineCap = 'round';
+        bCtx.lineJoin = 'round';
+        bCtx.beginPath();
+        pts.forEach((pt, idx) => {
+          const px = pt.x + ox * size;
+          const py = pt.y + oy * size;
+          if (idx === 0) bCtx.moveTo(px, py);
+          else bCtx.lineTo(px, py);
+        });
+        bCtx.stroke();
+      }
+    }
+  }
+
+  // 3. Subtle horizontal bark knots, lenticels & weathered moss/lichen hints
+  for (let i = 0; i < 60; i++) {
+    const x = hash(i * 14.3 + 2.1) * size;
+    const y = hash(i * 21.7 + 5.4) * size;
+    const r = 10 + hash(i * 7.8) * 22;
+    const isMoss = i % 4 === 0;
+    const col = isMoss ? 'rgba(74, 86, 56, 0.14)' : 'rgba(98, 84, 70, 0.14)';
+    for (let ox = -1; ox <= 1; ox++) {
+      for (let oy = -1; oy <= 1; oy++) {
+        const px = x + ox * size;
+        const py = y + oy * size;
+        if (px + r < 0 || px - r > size || py + r < 0 || py - r > size) continue;
+        const g = ctx.createRadialGradient(px, py, 1, px, py, r);
+        g.addColorStop(0, col);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(px, py, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  // 4. Fine organic surface grain
+  for (let i = 0; i < 3200; i++) {
+    const x = hash(i * 12.9898 + 1.1) * size;
+    const y = hash(i * 78.233 + 3.9) * size;
+    ctx.fillStyle = i % 2 === 0 ? 'rgba(26, 18, 12, 0.16)' : 'rgba(132, 114, 96, 0.1)';
+    ctx.fillRect(x, y, 2, 3);
   }
 
   const map = new THREE.CanvasTexture(cCanvas);
   map.colorSpace = THREE.SRGBColorSpace;
   map.wrapS = map.wrapT = THREE.RepeatWrapping;
-  map.repeat.set(2, 3);
+  map.repeat.set(1.5, 2.5);
+  map.generateMipmaps = true;
+  map.minFilter = THREE.LinearMipmapLinearFilter;
   map.anisotropy = 4;
 
   const bumpMap = new THREE.CanvasTexture(bCanvas);
   bumpMap.wrapS = bumpMap.wrapT = THREE.RepeatWrapping;
-  bumpMap.repeat.set(2, 3);
+  bumpMap.repeat.set(1.5, 2.5);
+  bumpMap.generateMipmaps = true;
+  bumpMap.minFilter = THREE.LinearMipmapLinearFilter;
 
   cachedBarkPbr = { map, bumpMap };
   return cachedBarkPbr;
@@ -1843,12 +2152,13 @@ export function createBarkPbr(): { map: THREE.CanvasTexture; bumpMap: THREE.Canv
 export function createLeafSprigTexture(): THREE.CanvasTexture {
   if (cachedLeafSprigTex) return cachedLeafSprigTex;
 
-  const size = 512;
+  const size = 256;
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext('2d')!;
   ctx.clearRect(0, 0, size, size);
+  ctx.scale(0.5, 0.5);
 
   const hash = (n: number) => {
     const s = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
@@ -1908,8 +2218,8 @@ export function createLeafSprigTexture(): THREE.CanvasTexture {
     ['#477438', '#6FA051'],
   ];
 
-  for (let i = 0; i < 220; i++) {
-    const tier = i < 80 ? 0 : i < 160 ? 1 : 2;
+  for (let i = 0; i < 150; i++) {
+    const tier = i < 55 ? 0 : i < 110 ? 1 : 2;
     const lobe = subLobes[i % subLobes.length];
 
     const r1 = hash(i * 1.93 + 0.7);

@@ -15,7 +15,7 @@ function applySecurityHeaders(response: NextResponse, isAdminRoute: boolean) {
   }
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const isAdminRoute = pathname.startsWith('/admin');
   const isAdminApi = pathname.startsWith('/api/admin');

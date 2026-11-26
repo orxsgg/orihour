@@ -10,6 +10,8 @@ import {
   Save,
   CheckCircle2,
   Layers,
+  CheckSquare,
+  Square,
 } from 'lucide-react';
 import { RoomConfig, VinylRecord } from '@/types/orihour';
 import { getSleeveDataUrl } from '@/components/room-3d/textures';
@@ -34,6 +36,7 @@ export default function TurntableRackTab({
 
   const [dragFromIdx, setDragFromIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+  const [selectedSlotIndices, setSelectedSlotIndices] = useState<Set<number>>(new Set());
 
   const activeTurntableVinyl = useMemo(
     () =>
@@ -43,7 +46,6 @@ export default function TurntableRackTab({
     [config.activeTurntableVinylId, vinyls]
   );
 
-  // Build 6 fixed rack slots (index 0 = Slot 1 frontmost, index 5 = Slot 6 back)
   const initialSlots = useMemo(() => {
     const arr: (string | null)[] = [null, null, null, null, null, null];
     for (const v of vinyls) {
@@ -63,11 +65,47 @@ export default function TurntableRackTab({
 
   useEffect(() => {
     setSlots(initialSlots);
+    setSelectedSlotIndices(new Set());
   }, [initialSlots]);
+
+  const filledIndices = useMemo(
+    () => slots.map((id, i) => (id ? i : -1)).filter((i) => i >= 0),
+    [slots]
+  );
+
+  const allFilledSelected =
+    filledIndices.length > 0 && filledIndices.every((i) => selectedSlotIndices.has(i));
+
+  const toggleSlotSelect = (idx: number) => {
+    setSelectedSlotIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
+
+  const toggleSelectAllFilled = () => {
+    if (allFilledSelected) {
+      setSelectedSlotIndices(new Set());
+    } else {
+      setSelectedSlotIndices(new Set(filledIndices));
+    }
+  };
+
+  const handleBulkClearSlots = () => {
+    const targets = Array.from(selectedSlotIndices).filter((i) => Boolean(slots[i]));
+    if (targets.length === 0) return;
+    setSlots((prev) => prev.map((val, i) => (selectedSlotIndices.has(i) ? null : val)));
+    setSelectedSlotIndices(new Set());
+    showToast(
+      `${targets.length} slot rak dikosongkan. Klik "Simpan Susunan Rak" untuk menerapkan.`
+    );
+  };
 
   const showToast = (msg: string) => {
     setFeedback(msg);
-    setTimeout(() => setFeedback(null), 3000);
+    setTimeout(() => setFeedback(null), 3200);
   };
 
   const handleSetTurntable = async (nextId: string | null) => {
@@ -98,6 +136,13 @@ export default function TurntableRackTab({
       next[slotIdx] = cleanId;
       return next;
     });
+    if (!cleanId) {
+      setSelectedSlotIndices((prev) => {
+        const next = new Set(prev);
+        next.delete(slotIdx);
+        return next;
+      });
+    }
   };
 
   const handleDropOnSlot = (targetIdx: number) => {
@@ -115,6 +160,7 @@ export default function TurntableRackTab({
       return next;
     });
 
+    setSelectedSlotIndices(new Set());
     setDragFromIdx(null);
     setDragOverIdx(null);
   };
@@ -123,6 +169,7 @@ export default function TurntableRackTab({
     setSavingRack(true);
     try {
       await onSaveRackOrder(slots);
+      setSelectedSlotIndices(new Set());
       showToast('Susunan 6 slot kontainer rak vinyl berhasil disimpan.');
     } finally {
       setSavingRack(false);
@@ -253,7 +300,7 @@ export default function TurntableRackTab({
         </div>
       </section>
 
-      {/* SECTION 2: DRAG-AND-DROP 6-SLOT 3D WOODEN RACK CONTAINER */}
+      {/* SECTION 2: DRAG-AND-DROP 6-SLOT 3D WOODEN RACK CONTAINER + BULK CLEAR */}
       <section className="rounded-[24px] border border-[#E5D7C3] bg-[#FAF5EC]/85 p-6 shadow-sm backdrop-blur-xl">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
@@ -265,19 +312,47 @@ export default function TurntableRackTab({
               Susunan Vinyl di Kontainer Rak
             </h2>
             <p className="mt-1 text-xs text-[#655040]">
-              Geser (drag &amp; drop) kartu slot untuk menukar urutan secara cepat. Slot #1 tampil paling depan hingga Slot #6 paling belakang.
+              Geser (drag &amp; drop) kartu slot untuk menukar urutan, atau ceklis slot terisi untuk mengeluarkannya sekaligus.
             </p>
           </div>
 
-          <button
-            type="button"
-            disabled={savingRack}
-            onClick={handlePersistRack}
-            className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-[#4A2E1B] px-4 py-2.5 text-xs font-semibold text-[#FAF5EC] shadow-md transition hover:bg-[#3A2213] disabled:opacity-50"
-          >
-            <Save className="h-3.5 w-3.5" />
-            <span>{savingRack ? 'Menyimpan...' : 'Simpan Susunan Rak'}</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {filledIndices.length > 0 && (
+              <button
+                type="button"
+                onClick={toggleSelectAllFilled}
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-2 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3]"
+              >
+                {allFilledSelected ? (
+                  <CheckSquare className="h-3.5 w-3.5" />
+                ) : (
+                  <Square className="h-3.5 w-3.5" />
+                )}
+                <span>{allFilledSelected ? 'Batal Pilih' : 'Pilih Semua Terisi'}</span>
+              </button>
+            )}
+
+            {selectedSlotIndices.size > 0 && (
+              <button
+                type="button"
+                onClick={handleBulkClearSlots}
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/25 bg-[#F2E7D7] px-3.5 py-2 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#E7D6BE]"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Keluarkan Terpilih ({selectedSlotIndices.size})</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              disabled={savingRack}
+              onClick={handlePersistRack}
+              className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-[#4A2E1B] px-4 py-2 text-xs font-semibold text-[#FAF5EC] shadow-md transition hover:bg-[#3A2213] disabled:opacity-50"
+            >
+              <Save className="h-3.5 w-3.5" />
+              <span>{savingRack ? 'Menyimpan...' : 'Simpan Susunan Rak'}</span>
+            </button>
+          </div>
         </div>
 
         <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -286,6 +361,7 @@ export default function TurntableRackTab({
             const isDragging = dragFromIdx === idx;
             const isDragOver =
               dragOverIdx === idx && dragFromIdx !== null && dragFromIdx !== idx;
+            const isChecked = selectedSlotIndices.has(idx);
 
             return (
               <div
@@ -316,10 +392,21 @@ export default function TurntableRackTab({
                     ? 'scale-[0.98] border-[#4A2E1B]/45 bg-[#EFE4D3] opacity-60'
                     : isDragOver
                     ? 'border-2 border-dashed border-[#4A2E1B] bg-[#F3E8D7]'
+                    : isChecked
+                    ? 'border-[#4A2E1B] bg-[#F3E8D7]/85 ring-1 ring-[#4A2E1B]/25'
                     : 'border-[#4A2E1B]/12 bg-white/88 hover:border-[#4A2E1B]/30'
                 }`}
               >
                 <div className="flex shrink-0 items-center gap-1.5 text-[#7A5E48]">
+                  <input
+                    type="checkbox"
+                    disabled={!vinylId}
+                    checked={isChecked}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => toggleSlotSelect(idx)}
+                    aria-label={`Pilih slot rak #${idx + 1}`}
+                    className="h-3.5 w-3.5 cursor-pointer accent-[#4A2E1B] disabled:cursor-not-allowed disabled:opacity-30"
+                  />
                   <GripVertical className="h-4 w-4" />
                   <div className="flex h-9 w-9 flex-col items-center justify-center rounded-xl bg-[#4A2E1B]/10 font-mono text-[10px] font-bold text-[#4A2E1B]">
                     <span>#{idx + 1}</span>

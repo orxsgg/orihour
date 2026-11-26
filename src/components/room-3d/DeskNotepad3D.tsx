@@ -14,24 +14,31 @@ interface DeskNotepad3DProps {
 }
 
 /**
- * Builds a flat, realistic satin silk bookmark ribbon with a classic V-notched swallowtail end.
- * Emerges cleanly from between the middle page layers (Y = 0.0205), clears the hardcover lip,
- * and drapes softly onto the walnut desk surface (Y = 0.002).
+ * Builds a gravity-draped satin silk bookmark ribbon with a classic swallowtail V-notch.
+ * Emerges between the page layers, settles gently onto the walnut desktop, and naturally
+ * bends downward 90 degrees over the front edge of the desk (local Z ≈ 0.353) under gravity.
  */
 function buildNaturalRibbonGeometry(): THREE.BufferGeometry {
-  const curve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(0.036, 0.0205, 0.238), // Tucked cleanly between lower & upper pages
-    new THREE.Vector3(0.042, 0.0205, 0.262), // Emerges straight out of page stack edge
-    new THREE.Vector3(0.052, 0.0175, 0.284), // Clears the bottom hardcover edge smoothly
-    new THREE.Vector3(0.064, 0.0085, 0.308), // Gentle gravity drop toward desk
-    new THREE.Vector3(0.076, 0.0028, 0.338), // Touches down onto walnut desktop
-    new THREE.Vector3(0.092, 0.0022, 0.376), // Soft natural curve along desk
-    new THREE.Vector3(0.104, 0.0021, 0.412), // Resting tail tip
-  ]);
+  const curve = new THREE.CatmullRomCurve3(
+    [
+      new THREE.Vector3(0.036, 0.0205, 0.24),   // Tucked cleanly between page layers
+      new THREE.Vector3(0.041, 0.0202, 0.262),  // Clears the archival page block edge
+      new THREE.Vector3(0.049, 0.0155, 0.278),  // Drops smoothly off the leather cover lip
+      new THREE.Vector3(0.059, 0.0042, 0.295),  // Settles down onto walnut desk surface
+      new THREE.Vector3(0.068, 0.0022, 0.324),  // Rests flat along the desktop
+      new THREE.Vector3(0.075, 0.0018, 0.348),  // Approaches the front desk edge (Z_world ≈ 0.40)
+      new THREE.Vector3(0.078, -0.0065, 0.362), // Bends smoothly over the front walnut edge
+      new THREE.Vector3(0.08, -0.028, 0.366),   // Hangs downward along gravity
+      new THREE.Vector3(0.079, -0.056, 0.365),  // Soft vertical drape below desk lip
+      new THREE.Vector3(0.077, -0.084, 0.364),  // Gravity-weighted swallowtail end
+    ],
+    false,
+    'centripetal',
+    0.5
+  );
 
-  const segments = 26;
+  const segments = 40;
   const halfWidth = 0.0115;
-  const up = new THREE.Vector3(0, 1, 0);
 
   const positions: number[] = [];
   const uvs: number[] = [];
@@ -41,13 +48,19 @@ function buildNaturalRibbonGeometry(): THREE.BufferGeometry {
     const u = i / segments;
     const p = curve.getPoint(u);
     const tan = curve.getTangent(u).normalize();
-    const right = new THREE.Vector3().crossVectors(up, tan).normalize();
+
+    // Gram-Schmidt orthogonalization against local +X keeps ribbon flat across horizontal AND vertical drape
+    const baseRight = new THREE.Vector3(1, 0, -0.06).normalize();
+    const right = baseRight
+      .clone()
+      .addScaledVector(tan, -baseRight.dot(tan))
+      .normalize();
 
     const leftPt = p.clone().addScaledVector(right, -halfWidth);
     const centerPt = p.clone();
     const rightPt = p.clone().addScaledVector(right, halfWidth);
 
-    // Classic V-notched swallowtail cut at the very end of the silk ribbon
+    // Classic V-notched swallowtail cut at the hanging tip
     if (i === segments) {
       centerPt.addScaledVector(tan, -0.013);
     }
@@ -62,10 +75,8 @@ function buildNaturalRibbonGeometry(): THREE.BufferGeometry {
     if (i < segments) {
       const b = i * 3;
       const n = (i + 1) * 3;
-      // Left half triangles
       indices.push(b, n, b + 1);
       indices.push(b + 1, n, n + 1);
-      // Right half triangles
       indices.push(b + 1, n + 1, b + 2);
       indices.push(b + 2, n + 1, n + 2);
     }
@@ -165,7 +176,7 @@ export default function DeskNotepad3D({
         onHoverLabel(null);
       }}
     >
-      {/* Hardcover Deep Burgundy Pebbled Leather Back Board (Y = 0.000 to 0.0124) */}
+      {/* Hardcover Deep Burgundy Pebbled Leather Back Board */}
       <mesh geometry={coverGeo} position={[0, 0.0022, 0]} castShadow receiveShadow>
         <meshStandardMaterial
           map={leather.map}
@@ -195,19 +206,19 @@ export default function DeskNotepad3D({
         </mesh>
       ))}
 
-      {/* Lower Half of Cream Archival Page Block (Y = 0.011 to 0.020) */}
+      {/* Lower Half of Cream Archival Page Block */}
       <mesh position={[0.004, 0.0155, 0]} castShadow receiveShadow>
         <boxGeometry args={[0.398, 0.009, 0.518]} />
         <meshStandardMaterial color="#E0D5C2" roughness={0.92} />
       </mesh>
 
-      {/* Upper Half of Cream Archival Page Block resting cleanly OVER the tucked bookmark (Y = 0.021 to 0.030) */}
+      {/* Upper Half of Cream Archival Page Block resting over the tucked bookmark */}
       <mesh position={[0.004, 0.0255, 0]} castShadow receiveShadow>
         <boxGeometry args={[0.398, 0.009, 0.518]} />
         <meshStandardMaterial color="#E8DFCE" roughness={0.9} />
       </mesh>
 
-      {/* Subtle Secondary Offset Sheet Layer for Natural Paper Stack Feel */}
+      {/* Subtle Secondary Offset Sheet Layer */}
       <mesh position={[0.006, 0.0303, 0.001]} rotation={[0, 0.005, 0]} receiveShadow>
         <boxGeometry args={[0.396, 0.0014, 0.516]} />
         <meshStandardMaterial color="#EFE7D8" roughness={0.92} />
@@ -229,11 +240,11 @@ export default function DeskNotepad3D({
         />
       </mesh>
 
-      {/* Natural Woven Burgundy Silk Ribbon Bookmark emerging between Lower & Upper Page Stacks */}
+      {/* Gravity-Draped Burgundy Silk Ribbon Bookmark */}
       <mesh geometry={ribbonGeo} castShadow receiveShadow>
         <meshStandardMaterial
           color="#7C1E30"
-          roughness={0.58}
+          roughness={0.56}
           metalness={0.08}
           side={THREE.DoubleSide}
         />
