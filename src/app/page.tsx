@@ -1,69 +1,757 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
+import * as THREE from 'three';
+import { Disc3 } from 'lucide-react';
+import {
+  DEFAULT_ROOM_CONFIG,
+  INITIAL_POSTCARDS,
+  INITIAL_VINYLS,
+} from '@/data/mockVinyls';
+import { extractUniqueGenres, sortPostcardsForBoard } from '@/lib/genreUtils';
+import { computeAtmosphere } from '@/lib/timeAtmosphere';
+import { audioEngine } from '@/lib/audioEngine';
+import {
+  CameraFocusTarget,
+  GenreItem,
+  GuestbookPostcard,
+  MAX_PINBOARD_VISIBLE,
+  RoomConfig,
+  TrackItem,
+  VinylRecord,
+  WeatherType,
+} from '@/types/orihour';
+import EntryGate from '@/components/hud/EntryGate';
+import MinimalHud from '@/components/hud/MinimalHud';
+import LinerNotesModal from '@/components/hud/LinerNotesModal';
+import PlaylistModal from '@/components/hud/PlaylistModal';
+import PlaylistTrackModal from '@/components/hud/PlaylistTrackModal';
+import PinboardModal, { PostcardSubmissionPayload } from '@/components/hud/PinboardModal';
+import LofiCatalogView from '@/components/lofi/LofiCatalogView';
+
+const OrihourCanvas = dynamic(() => import('@/components/room-3d/OrihourCanvas'), {
+  ssr: false,
+});
+
+function getCurrentLocalHourDecimal(): number {
+  const now = new Date();
+  return now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+}
+
+function resolveDefaultTrack(vinyl: VinylRecord): TrackItem | null {
+  if (vinyl.releaseType === 'Song') return null;
+  const tracks = vinyl.tracks || [];
+  if (tracks.length === 0) return null;
+
+  if (vinyl.favoriteSong?.trim()) {
+    const match = tracks.find(
+      (t) => t.title.trim().toLowerCase() === vinyl.favoriteSong!.trim().toLowerCase()
+    );
+    if (match) return match;
+  }
+  return tracks[0];
+}
+
+function getSourceKey(vinyl: VinylRecord, track: TrackItem | null): string {
+  return track ? `${vinyl.id}:${track.id}` : vinyl.id;
+}
+
+export default function OrihourHomePage() {
+  const [dataReady, setDataReady] = useState(false);
+  const [sceneReady, setSceneReady] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(10);
+  const [curtainFading, setCurtainFading] = useState(false);
+  const [curtainMounted, setCurtainMounted] = useState(true);
+  const [hasEntered, setHasEntered] = useState(false);
+  const [lofiMode, setLofiMode] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+
+  const [roomConfig, setRoomConfig] = useState<RoomConfig>(DEFAULT_ROOM_CONFIG);
+  const [vinyls, setVinyls] = useState<VinylRecord[]>(INITIAL_VINYLS);
+  const [genres, setGenres] = useState<GenreItem[]>(() =>
+    extractUniqueGenres(INITIAL_VINYLS).map((name, i) => ({
+      id: `init-${i}`,
+      name,
+    }))
+  );
+  const [activeVinyl, setActiveVinyl] = useState<VinylRecord | null>(INITIAL_VINYLS[0]);
+  const [activeTrack, setActiveTrack] = useState<TrackItem | null>(() =>
+    resolveDefaultTrack(INITIAL_VINYLS[0])
+  );
+  const [previousVinyl, setPreviousVinyl] = useState<VinylRecord | null>(null);
+  const [postcards, setPostcards] = useState<GuestbookPostcard[]>(
+    sortPostcardsForBoard(INITIAL_POSTCARDS).slice(0, MAX_PINBOARD_VISIBLE)
+  );
+
+  // Turntable playback state
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isTransferring, setIsTransferring] = useState(false);
+  const [rackReadyToShift, setRackReadyToShift] = useState(false);
+  const [transferOrigin, setTransferOrigin] = useState(() => new THREE.Vector3(-1.04, 1.82, -0.14));
+  const [progressRatio, setProgressRatio] = useState(0);
+
+  // Separate Collection Preview Card playback state
+  const [collectionOpen, setCollectionOpen] = useState(false);
+  const [selectedCollectionItem, setSelectedCollectionItem] = useState<VinylRecord | null>(null);
+  const [cardSubTrack, setCardSubTrack] = useState<TrackItem | null>(null);
+  const [cardPlayingKey, setCardPlayingKey] = useState<string | null>(null);
+  const [isCardPlaying, setIsCardPlaying] = useState(false);
+  const [cardProgressRatio, setCardProgressRatio] = useState(0);
+
+  // Desk Wallet state
+  const [walletOpen, setWalletOpen] = useState(false);
+
+  const [cameraFocus, setCameraFocus] = useState<CameraFocusTarget>('ENTRY');
+  const [weather, setWeather] = useState<WeatherType>('CLEAR');
+  const hasManualWeather = useRef(false);
+
+  const [isLiveTime, setIsLiveTime] = useState(true);
+  const [hourDecimal, setHourDecimal] = useState<number>(12.0);
+  const [lampOverride, setLampOverride] = useState<boolean | null>(null);
+
+  const [showTimeScrubber, setShowTimeScrubber] = useState(false);
+  const [linerModalOpen, setLinerModalOpen] = useState(false);
+  const [pinboardOpen, setPinboardOpen] = useState(false);
+  const [hoverLabel, setHoverLabel] = useState<string | null>(null);
+
+  const handleSceneReady = useCallback(() => {
+    setSceneReady(true);
+  }, []);
+
+  // Real staged loading bar: progresses smoothly 0% -> 48% (data) -> 90% (3D compile) -> 100% (complete)
+  useEffect(() => {
+    if (sceneReady) {
+      setLoadProgress(100);
+      const fadeTimer = window.setTimeout(() => setCurtainFading(true), 240);
+      const unmountTimer = window.setTimeout(() => setCurtainMounted(false), 620);
+      return () => {
+        window.clearTimeout(fadeTimer);
+        window.clearTimeout(unmountTimer);
+      };
+    }
+
+    const target = dataReady ? 90 : 48;
+    const interval = window.setInterval(() => {
+      setLoadProgress((prev) => {
+        if (prev >= target) return prev;
+        const step = Math.max(1.2, (target - prev) * 0.14);
+        return Math.min(target, prev + step);
+      });
+    }, 55);
+
+    return () => window.clearInterval(interval);
+  }, [dataReady, sceneReady]);
+
+  const stopCardPlayback = useCallback(() => {
+    setCardPlayingKey((current) => {
+      if (current !== null) {
+        audioEngine.stopRecord();
+      }
+      return null;
+    });
+    setIsCardPlaying(false);
+    setCardProgressRatio(0);
+    setCardSubTrack(null);
+  }, []);
+
+  useEffect(() => {
+    setHourDecimal(getCurrentLocalHourDecimal());
+
+    try {
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl2');
+      if (!gl) {
+        setLofiMode(true);
+        setDataReady(true);
+        setSceneReady(true);
+      }
+    } catch {
+      setLofiMode(true);
+      setDataReady(true);
+      setSceneReady(true);
+    }
+
+    const dataSafetyTimer = window.setTimeout(() => {
+      setDataReady(true);
+    }, 1200);
+
+    const sceneSafetyTimer = window.setTimeout(() => {
+      setSceneReady(true);
+    }, 3400);
+
+    let active = true;
+
+    fetch('/api/room-data', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active) return;
+        if (data) {
+          const nextConfig: RoomConfig = data.config || DEFAULT_ROOM_CONFIG;
+          const nextVinyls: VinylRecord[] = Array.isArray(data.vinyls)
+            ? data.vinyls
+            : INITIAL_VINYLS;
+          const nextPostcards: GuestbookPostcard[] = Array.isArray(data.postcards)
+            ? sortPostcardsForBoard(data.postcards).slice(0, MAX_PINBOARD_VISIBLE)
+            : sortPostcardsForBoard(INITIAL_POSTCARDS).slice(0, MAX_PINBOARD_VISIBLE);
+          const nextGenres: GenreItem[] = Array.isArray(data.genres)
+            ? data.genres
+            : extractUniqueGenres(nextVinyls).map((name, i) => ({
+                id: `gnr-${i}`,
+                name,
+              }));
+
+          setRoomConfig(nextConfig);
+          setVinyls(nextVinyls);
+          setPostcards(nextPostcards);
+          setGenres(nextGenres);
+
+          if (nextConfig.activeTurntableVinylId) {
+            const found =
+              nextVinyls.find((v) => v.id === nextConfig.activeTurntableVinylId) ?? null;
+            setActiveVinyl(found);
+            setActiveTrack(found ? resolveDefaultTrack(found) : null);
+          } else {
+            setActiveVinyl(null);
+            setActiveTrack(null);
+          }
+        }
+        setDataReady(true);
+      })
+      .catch(() => {
+        if (active) setDataReady(true);
+      });
+
+    fetch('/api/weather')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active || hasManualWeather.current) return;
+        const nextWeather = data?.weather as WeatherType | undefined;
+        if (
+          nextWeather === 'CLEAR' ||
+          nextWeather === 'CLOUDY' ||
+          nextWeather === 'RAIN' ||
+          nextWeather === 'BREEZY'
+        ) {
+          setWeather(nextWeather);
+        }
+      })
+      .catch(() => {
+        // Fallback silently to CLEAR
+      });
+
+    return () => {
+      active = false;
+      window.clearTimeout(dataSafetyTimer);
+      window.clearTimeout(sceneSafetyTimer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isLiveTime) return;
+    const timer = setInterval(() => {
+      setHourDecimal(getCurrentLocalHourDecimal());
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [isLiveTime]);
+
+  const atmosphere = useMemo(
+    () => computeAtmosphere(hourDecimal, weather),
+    [hourDecimal, weather]
+  );
+
+  const lampOn = lampOverride !== null ? lampOverride : atmosphere.autoLampOn;
+
+  useEffect(() => {
+    if (hasEntered) {
+      audioEngine.syncWeatherAmbience(weather);
+    }
+  }, [weather, hasEntered]);
+
+  const handleChangeFocus = useCallback((nextFocus: CameraFocusTarget) => {
+    setCameraFocus(nextFocus);
+    setWalletOpen(nextFocus === 'WALLET');
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && hasEntered) {
+        stopCardPlayback();
+        setLinerModalOpen(false);
+        setCollectionOpen(false);
+        setSelectedCollectionItem(null);
+        setPinboardOpen(false);
+        setShowTimeScrubber(false);
+        setWalletOpen(false);
+        setCameraFocus('DESK');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [hasEntered, stopCardPlayback]);
+
+  const handleManualWeatherChange = useCallback((next: WeatherType) => {
+    hasManualWeather.current = true;
+    setWeather(next);
+  }, []);
+
+  const handleCycleWeather = useCallback(() => {
+    hasManualWeather.current = true;
+    const order: WeatherType[] = ['CLEAR', 'CLOUDY', 'RAIN', 'BREEZY'];
+    setWeather((prev) => order[(order.indexOf(prev) + 1) % order.length]);
+  }, []);
+
+  const startTurntablePlayback = useCallback(
+    (vinyl: VinylRecord, trackOverride?: TrackItem | null) => {
+      setCardPlayingKey(null);
+      setIsCardPlaying(false);
+      setCardProgressRatio(0);
+
+      const resolvedTrack =
+        trackOverride !== undefined ? trackOverride : resolveDefaultTrack(vinyl);
+      setActiveTrack(resolvedTrack);
+
+      audioEngine.triggerNeedleDrop();
+      setIsPlaying(true);
+      setProgressRatio(0);
+      audioEngine.playRecord(
+        vinyl,
+        (ratio) => setProgressRatio(ratio),
+        () => {
+          setIsPlaying(false);
+          setProgressRatio(0);
+        },
+        resolvedTrack
+      );
+    },
+    []
+  );
+
+  const handleSelectVinyl = useCallback(
+    (vinyl: VinylRecord, origin?: THREE.Vector3, subTrack?: TrackItem | null) => {
+      if (isTransferring) return;
+
+      setCardPlayingKey(null);
+      setIsCardPlaying(false);
+      setCardProgressRatio(0);
+      setWalletOpen(false);
+
+      const nextTrack =
+        subTrack !== undefined ? subTrack : resolveDefaultTrack(vinyl);
+
+      if (activeVinyl && vinyl.id === activeVinyl.id) {
+        const sameTrack = (activeTrack?.id ?? null) === (nextTrack?.id ?? null);
+        if (sameTrack) {
+          if (isPlaying) {
+            audioEngine.pauseRecord();
+            setIsPlaying(false);
+          } else {
+            const key = getSourceKey(vinyl, nextTrack);
+            if (audioEngine.hasPausedSource(key) && audioEngine.resumeRecord()) {
+              setIsPlaying(true);
+            } else {
+              startTurntablePlayback(vinyl, nextTrack);
+            }
+          }
+          return;
+        }
+
+        startTurntablePlayback(vinyl, nextTrack);
+        return;
+      }
+
+      audioEngine.stopRecord();
+      setIsPlaying(false);
+      setProgressRatio(0);
+      setPreviousVinyl(activeVinyl);
+      setActiveVinyl(vinyl);
+      setActiveTrack(nextTrack);
+
+      if (lofiMode) {
+        startTurntablePlayback(vinyl, nextTrack);
+        return;
+      }
+
+      if (origin) {
+        setTransferOrigin(origin.clone());
+      } else {
+        setTransferOrigin(new THREE.Vector3(-0.38, 2.48, -0.22));
+      }
+      setRackReadyToShift(false);
+      setCameraFocus('TURNTABLE');
+      setIsTransferring(true);
+    },
+    [activeVinyl, activeTrack, isPlaying, isTransferring, lofiMode, startTurntablePlayback]
+  );
+
+  const handleRackCleared = useCallback(() => {
+    setRackReadyToShift(true);
+  }, []);
+
+  const handleTransferComplete = useCallback(() => {
+    setIsTransferring(false);
+    setRackReadyToShift(false);
+    setPreviousVinyl(null);
+    if (activeVinyl) {
+      startTurntablePlayback(activeVinyl, activeTrack);
+    }
+  }, [activeVinyl, activeTrack, startTurntablePlayback]);
+
+  const handleTogglePlay = useCallback(() => {
+    if (isTransferring || !activeVinyl) return;
+    if (isPlaying) {
+      audioEngine.pauseRecord();
+      setIsPlaying(false);
+      return;
+    }
+
+    const key = getSourceKey(activeVinyl, activeTrack);
+    if (audioEngine.hasPausedSource(key) && audioEngine.resumeRecord()) {
+      setIsPlaying(true);
+    } else {
+      startTurntablePlayback(activeVinyl, activeTrack);
+    }
+  }, [activeVinyl, activeTrack, isPlaying, isTransferring, startTurntablePlayback]);
+
+  const handleSelectActiveAlbumTrack = useCallback(
+    (track: TrackItem) => {
+      if (!activeVinyl) return;
+      if (activeTrack?.id === track.id) {
+        handleTogglePlay();
+        return;
+      }
+      startTurntablePlayback(activeVinyl, track);
+    },
+    [activeVinyl, activeTrack, handleTogglePlay, startTurntablePlayback]
+  );
+
+  const handleSeekTurntable = useCallback(
+    (ratio: number) => {
+      if (!activeVinyl) return;
+      const clamped = Math.max(0, Math.min(1, ratio));
+      setProgressRatio(clamped);
+
+      const key = getSourceKey(activeVinyl, activeTrack);
+      if (isPlaying || audioEngine.hasPausedSource(key)) {
+        audioEngine.seekToRatio(clamped);
+      } else {
+        startTurntablePlayback(activeVinyl, activeTrack);
+        window.setTimeout(() => audioEngine.seekToRatio(clamped), 80);
+      }
+    },
+    [activeVinyl, activeTrack, isPlaying, startTurntablePlayback]
+  );
+
+  const handleToggleCollectionCardPlay = useCallback(
+    (vinyl: VinylRecord, subTrack?: TrackItem | null) => {
+      const targetSub =
+        subTrack !== undefined ? subTrack : cardSubTrack ?? resolveDefaultTrack(vinyl);
+      const targetKey = getSourceKey(vinyl, targetSub);
+
+      if (cardPlayingKey === targetKey && isCardPlaying) {
+        audioEngine.pauseRecord();
+        setIsCardPlaying(false);
+        return;
+      }
+
+      if (cardPlayingKey === targetKey && !isCardPlaying && audioEngine.hasPausedSource(targetKey)) {
+        if (audioEngine.resumeRecord()) {
+          setIsCardPlaying(true);
+          return;
+        }
+      }
+
+      if (isPlaying) {
+        audioEngine.stopRecord();
+        setIsPlaying(false);
+        setProgressRatio(0);
+      }
+
+      audioEngine.unlockAndInit(soundEnabled);
+      setCardSubTrack(targetSub);
+      setCardPlayingKey(targetKey);
+      setIsCardPlaying(true);
+      setCardProgressRatio(0);
+      audioEngine.playRecord(
+        vinyl,
+        (ratio) => setCardProgressRatio(ratio),
+        () => {
+          setIsCardPlaying(false);
+          setCardPlayingKey(null);
+          setCardProgressRatio(0);
+        },
+        targetSub
+      );
+    },
+    [cardSubTrack, cardPlayingKey, isCardPlaying, isPlaying, soundEnabled]
+  );
+
+  const handleSeekCardProgress = useCallback(
+    (ratio: number) => {
+      if (!selectedCollectionItem) return;
+      const clamped = Math.max(0, Math.min(1, ratio));
+      setCardProgressRatio(clamped);
+
+      if (cardPlayingKey && (isCardPlaying || audioEngine.hasPausedSource(cardPlayingKey))) {
+        audioEngine.seekToRatio(clamped);
+      } else {
+        handleToggleCollectionCardPlay(selectedCollectionItem, cardSubTrack);
+        window.setTimeout(() => audioEngine.seekToRatio(clamped), 80);
+      }
+    },
+    [
+      selectedCollectionItem,
+      cardPlayingKey,
+      isCardPlaying,
+      cardSubTrack,
+      handleToggleCollectionCardPlay,
+    ]
+  );
+
+  const handleAddPostcard = useCallback(async (entry: PostcardSubmissionPayload) => {
+    const res = await fetch('/api/postcards', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entry),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Gagal menyimpan kartu pos.');
+    }
+
+    const nextCard = data.postcard as GuestbookPostcard;
+    setPostcards((prev) =>
+      sortPostcardsForBoard([nextCard, ...prev]).slice(0, MAX_PINBOARD_VISIBLE)
+    );
+  }, []);
+
+  const handleEnterRoom = (withSound: boolean) => {
+    setSoundEnabled(withSound);
+    audioEngine.unlockAndInit(withSound);
+    audioEngine.syncWeatherAmbience(weather);
+    setHasEntered(true);
+    setCameraFocus('DESK');
+  };
+
+  if (lofiMode) {
+    return (
+      <LofiCatalogView
+        config={roomConfig}
+        vinyls={vinyls}
+        genres={genres}
+        activeVinyl={activeVinyl}
+        activeTrack={activeTrack}
+        isPlaying={isPlaying}
+        progressRatio={progressRatio}
+        onSelectAndPlay={(v, subTrack) => {
+          audioEngine.unlockAndInit(soundEnabled);
+          handleSelectVinyl(v, undefined, subTrack);
+        }}
+        onSeekProgress={handleSeekTurntable}
+        onReturnTo3D={() => {
+          setLofiMode(false);
+          if (!hasEntered) {
+            setCameraFocus('ENTRY');
+          }
+        }}
+      />
+    );
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <main className="relative h-screen w-screen overflow-hidden bg-[#120E0B] select-none">
+      <div className="fixed inset-0 z-0 h-screen w-screen">
+        {dataReady && (
+          <OrihourCanvas
+            config={roomConfig}
+            vinyls={vinyls}
+            activeVinyl={activeVinyl}
+            previousVinyl={previousVinyl}
+            postcards={postcards}
+            isPlaying={isPlaying}
+            isTransferring={isTransferring}
+            rackReadyToShift={rackReadyToShift}
+            walletOpen={walletOpen}
+            transferOrigin={transferOrigin}
+            cameraFocus={cameraFocus}
+            isEntryMode={!hasEntered}
+            hourDecimal={hourDecimal}
+            isLiveTime={isLiveTime}
+            weather={weather}
+            lampOn={lampOn}
+            atmosphere={atmosphere}
+            onSceneReady={handleSceneReady}
+            onSelectVinyl={(vinyl, origin) => handleSelectVinyl(vinyl, origin)}
+            onRackCleared={handleRackCleared}
+            onTransferComplete={handleTransferComplete}
+            onTogglePlay={handleTogglePlay}
+            onToggleLamp={() => setLampOverride((prev) => !(prev ?? atmosphere.autoLampOn))}
+            onCycleWeather={handleCycleWeather}
+            onClickClock={() => {
+              setWalletOpen(false);
+              setCameraFocus('CLOCK');
+              setShowTimeScrubber((prev) => !prev);
+            }}
+            onFocusNotepad={() => handleChangeFocus('NOTES')}
+            onOpenLinerNotes={() => {
+              if (activeVinyl) setLinerModalOpen(true);
+            }}
+            onClickPinboard={() => {
+              setWalletOpen(false);
+              setCameraFocus('PINBOARD');
+              setPinboardOpen(true);
+            }}
+            onOpenWallet={() => handleChangeFocus('WALLET')}
+            onHoverLabel={setHoverLabel}
+          />
+        )}
+      </div>
+
+      {/* Smooth 0% -> 100% Preload Curtain */}
+      {curtainMounted && (
+        <div
+          className={`fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#120E0B] transition-opacity duration-350 ${
+            curtainFading ? 'pointer-events-none opacity-0' : 'opacity-100'
+          }`}
+        >
+          <Disc3 className="h-7 w-7 text-[#D4AA63] opacity-90" />
+          <p className="mt-3 font-mono text-[11px] tracking-[0.28em] text-[#E6C79C] uppercase">
+            {roomConfig.siteName}
+          </p>
+          <div className="mt-3.5 h-[2px] w-36 overflow-hidden rounded-full bg-[#E6C79C]/20">
+            <div
+              className="h-full rounded-full bg-[#D4AA63] transition-[width] duration-200 ease-out"
+              style={{ width: `${Math.round(loadProgress)}%` }}
+            />
+          </div>
+          <p className="mt-2 font-mono text-[9.5px] tracking-[0.2em] text-[#C9B99F]/70">
+            {Math.round(loadProgress)}%
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      )}
+
+      {!hasEntered ? (
+        <EntryGate
+          visible={curtainFading}
+          isNightHud={atmosphere.isNightHud}
+          hourDecimal={hourDecimal}
+          phaseLabel={atmosphere.phaseLabel}
+          weather={weather}
+          vinylCount={vinyls.length}
+          featuredTitle={activeVinyl?.title ?? null}
+          featuredArtist={activeVinyl?.artist ?? null}
+          onEnterRoom={handleEnterRoom}
+          onEnterLofi={() => {
+            setLofiMode(true);
+            setHasEntered(true);
+          }}
+        />
+      ) : (
+        <>
+          <MinimalHud
+            activeVinyl={activeVinyl}
+            activeTrack={activeTrack}
+            vinylCount={vinyls.length}
+            postcardCount={postcards.length}
+            isPlaying={isPlaying}
+            progressRatio={progressRatio}
+            cameraFocus={cameraFocus}
+            weather={weather}
+            lampOn={lampOn}
+            soundEnabled={soundEnabled}
+            hourDecimal={hourDecimal}
+            isLiveTime={isLiveTime}
+            phaseLabel={atmosphere.phaseLabel}
+            showTimeScrubber={showTimeScrubber}
+            hoverLabel={hoverLabel}
+            onChangeFocus={handleChangeFocus}
+            onChangeWeather={handleManualWeatherChange}
+            onToggleLamp={() => setLampOverride((prev) => !(prev ?? atmosphere.autoLampOn))}
+            onToggleSound={() => {
+              const next = !soundEnabled;
+              setSoundEnabled(next);
+              audioEngine.setSoundEnabled(next);
+            }}
+            onTogglePlay={handleTogglePlay}
+            onSeekProgress={handleSeekTurntable}
+            onToggleTimeScrubber={() => setShowTimeScrubber((prev) => !prev)}
+            onScrubHour={(h) => {
+              setIsLiveTime(false);
+              setHourDecimal(h);
+            }}
+            onResetLiveTime={() => {
+              setIsLiveTime(true);
+              setHourDecimal(getCurrentLocalHourDecimal());
+            }}
+            onUpdateVolumes={(m, r, c) => {
+              audioEngine.setVolumes(m, r, c);
+              audioEngine.syncWeatherAmbience(weather);
+            }}
+            onOpenLinerNotes={() => {
+              if (activeVinyl) setLinerModalOpen(true);
+            }}
+            onOpenCollection={() => {
+              setSelectedCollectionItem(null);
+              setCollectionOpen(true);
+            }}
+            onOpenPinboard={() => {
+              setWalletOpen(false);
+              setCameraFocus('PINBOARD');
+              setPinboardOpen(true);
+            }}
+            onSwitchToLofi={() => setLofiMode(true)}
+          />
+
+          <LinerNotesModal
+            open={linerModalOpen}
+            activeVinyl={activeVinyl}
+            activeTrack={activeTrack}
+            isPlaying={isPlaying}
+            progressRatio={progressRatio}
+            onTogglePlay={handleTogglePlay}
+            onSelectTrack={handleSelectActiveAlbumTrack}
+            onSeekProgress={handleSeekTurntable}
+            onClose={() => setLinerModalOpen(false)}
+          />
+
+          <PlaylistModal
+            open={collectionOpen && !selectedCollectionItem}
+            vinyls={vinyls}
+            genres={genres}
+            onClose={() => setCollectionOpen(false)}
+            onViewTrackDetails={(item) => {
+              setSelectedCollectionItem(item);
+              setCardSubTrack(resolveDefaultTrack(item));
+            }}
+          />
+
+          <PlaylistTrackModal
+            track={selectedCollectionItem}
+            activeSubTrack={cardSubTrack}
+            isCardPlaying={isCardPlaying}
+            cardProgressRatio={cardProgressRatio}
+            onToggleCardPlay={handleToggleCollectionCardPlay}
+            onSeekCardProgress={handleSeekCardProgress}
+            onBackToCollection={() => {
+              stopCardPlayback();
+              setSelectedCollectionItem(null);
+            }}
+            onCloseAll={() => {
+              stopCardPlayback();
+              setSelectedCollectionItem(null);
+              setCollectionOpen(false);
+            }}
+          />
+
+          <PinboardModal
+            open={pinboardOpen}
+            postcards={postcards}
+            onAddPostcard={handleAddPostcard}
+            onClose={() => setPinboardOpen(false)}
+          />
+        </>
+      )}
+    </main>
   );
 }
