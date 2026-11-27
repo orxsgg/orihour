@@ -11,6 +11,7 @@ import {
   Pin,
   Wallet,
   BarChart3,
+  HardDrive,
   ExternalLink,
   LogOut,
   RefreshCw,
@@ -18,6 +19,7 @@ import {
 } from 'lucide-react';
 import { DEFAULT_ROOM_CONFIG } from '@/data/mockVinyls';
 import { extractUniqueGenres, sortPostcardsForBoard } from '@/lib/genreUtils';
+import { STORAGE_UPDATED_EVENT } from '@/lib/supabase/storage';
 import {
   GenreItem,
   GuestbookPostcard,
@@ -31,6 +33,7 @@ import WallPostersTab from '@/components/admin/WallPostersTab';
 import PinboardModerationTab from '@/components/admin/PinboardModerationTab';
 import RoomWalletTab from '@/components/admin/RoomWalletTab';
 import AnalyticsTab from '@/components/admin/AnalyticsTab';
+import StoragePoolTab, { StoragePoolOverview } from '@/components/admin/StoragePoolTab';
 
 type AdminTabId =
   | 'turntable'
@@ -38,6 +41,7 @@ type AdminTabId =
   | 'posters'
   | 'pinboard'
   | 'room'
+  | 'storage'
   | 'analytics';
 
 export default function OrihourAdminPage() {
@@ -52,6 +56,24 @@ export default function OrihourAdminPage() {
   const [vinyls, setVinyls] = useState<VinylRecord[]>([]);
   const [postcards, setPostcards] = useState<GuestbookPostcard[]>([]);
   const [genres, setGenres] = useState<GenreItem[]>([]);
+
+  const [storageOverview, setStorageOverview] = useState<StoragePoolOverview | null>(null);
+  const [storageLoading, setStorageLoading] = useState(false);
+
+  const loadStorageOverview = useCallback(async () => {
+    setStorageLoading(true);
+    try {
+      const res = await fetch('/api/admin/storage', { cache: 'no-store' });
+      const data = await res.json().catch(() => null);
+      if (res.ok && data) {
+        setStorageOverview(data as StoragePoolOverview);
+      }
+    } catch {
+      // Abaikan diam-diam agar tab lain tetap bisa dipakai
+    } finally {
+      setStorageLoading(false);
+    }
+  }, []);
 
   const loadRoomData = useCallback(async () => {
     setLoading(true);
@@ -88,7 +110,17 @@ export default function OrihourAdminPage() {
 
   useEffect(() => {
     loadRoomData();
-  }, [loadRoomData]);
+    loadStorageOverview();
+  }, [loadRoomData, loadStorageOverview]);
+
+  // Refresh kapasitas & banner peringatan otomatis setiap kali ada file yang selesai diunggah
+  useEffect(() => {
+    const onStorageUpdated = () => {
+      void loadStorageOverview();
+    };
+    window.addEventListener(STORAGE_UPDATED_EVENT, onStorageUpdated);
+    return () => window.removeEventListener(STORAGE_UPDATED_EVENT, onStorageUpdated);
+  }, [loadStorageOverview]);
 
   const handleLogout = async () => {
     setLoggingOut(true);
@@ -318,10 +350,13 @@ export default function OrihourAdminPage() {
     await loadRoomData();
   };
 
+  const storageAlertSeverity = storageOverview?.warningSeverity || 'none';
+
   const tabs: {
     id: AdminTabId;
     label: string;
     count?: number;
+    alertDot?: 'warning' | 'full' | null;
     icon: React.ComponentType<{ className?: string }>;
   }[] = [
     { id: 'turntable', label: 'Turntable & Rak', icon: Disc3 },
@@ -329,6 +364,13 @@ export default function OrihourAdminPage() {
     { id: 'posters', label: 'Poster Dinding', count: config.posters.length, icon: Frame },
     { id: 'pinboard', label: 'Pinboard', count: postcards.length, icon: Pin },
     { id: 'room', label: 'Ruangan & Dompet', icon: Wallet },
+    {
+      id: 'storage',
+      label: 'Penyimpanan',
+      count: storageOverview?.accounts.length,
+      alertDot: storageAlertSeverity === 'none' ? null : storageAlertSeverity,
+      icon: HardDrive,
+    },
     { id: 'analytics', label: 'Analitik', icon: BarChart3 },
   ];
 
@@ -360,12 +402,17 @@ export default function OrihourAdminPage() {
           <div className="flex items-center gap-1.5 sm:gap-2">
             <button
               type="button"
-              disabled={loading}
-              onClick={loadRoomData}
+              disabled={loading || storageLoading}
+              onClick={() => {
+                void loadRoomData();
+                void loadStorageOverview();
+              }}
               className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-white px-2.5 py-2 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3] disabled:opacity-50 sm:px-3"
               title="Sinkronkan data terbaru dari database"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${loading || storageLoading ? 'animate-spin' : ''}`}
+              />
               <span className="hidden sm:inline">Sync</span>
             </button>
 
@@ -391,7 +438,7 @@ export default function OrihourAdminPage() {
           </div>
         </div>
 
-        {/* Navigation Tabs — Sleek horizontal scroll on mobile, wrapped on desktop */}
+        {/* Navigation Tabs */}
         <div className="mx-auto max-w-6xl px-4 pb-3 sm:px-6">
           <nav className="no-scrollbar flex items-center gap-1.5 overflow-x-auto sm:flex-wrap sm:overflow-visible">
             {tabs.map((tab) => {
@@ -402,7 +449,7 @@ export default function OrihourAdminPage() {
                   key={tab.id}
                   type="button"
                   onClick={() => setActiveTab(tab.id)}
-                  className={`inline-flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-xl border px-3 py-1.5 text-xs font-semibold transition sm:px-3.5 sm:py-2 ${
+                  className={`relative inline-flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-xl border px-3 py-1.5 text-xs font-semibold transition sm:px-3.5 sm:py-2 ${
                     isActive
                       ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC] shadow-sm'
                       : 'border-[#4A2E1B]/15 bg-white/80 text-[#5C4432] hover:border-[#4A2E1B]/35 hover:bg-white'
@@ -421,6 +468,18 @@ export default function OrihourAdminPage() {
                       {tab.count}
                     </span>
                   )}
+                  {tab.alertDot && (
+                    <span
+                      className={`h-2 w-2 rounded-full ${
+                        tab.alertDot === 'full' ? 'bg-rose-500 animate-pulse' : 'bg-amber-500'
+                      }`}
+                      title={
+                        tab.alertDot === 'full'
+                          ? 'Penyimpanan penuh!'
+                          : 'Penyimpanan hampir penuh'
+                      }
+                    />
+                  )}
                 </button>
               );
             })}
@@ -431,6 +490,39 @@ export default function OrihourAdminPage() {
       {/* Internal Scrollable Tab Content Area */}
       <div className="orihour-scroll flex-1 overflow-y-auto [scrollbar-gutter:stable]">
         <main className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-6">
+          {/* Global Storage Capacity Warning / Full Banner */}
+          {storageOverview?.warningMessage && storageAlertSeverity !== 'none' && (
+            <div
+              className={`mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-xs font-semibold ${
+                storageAlertSeverity === 'full'
+                  ? 'border-[#6E1D2C]/35 bg-[#6E1D2C]/12 text-[#571622]'
+                  : 'border-amber-700/30 bg-amber-500/15 text-amber-950'
+              }`}
+            >
+              <span className="inline-flex items-center gap-2.5">
+                <AlertTriangle
+                  className={`h-4 w-4 shrink-0 ${
+                    storageAlertSeverity === 'full' ? 'text-[#6E1D2C]' : 'text-amber-700'
+                  }`}
+                />
+                <span>{storageOverview.warningMessage}</span>
+              </span>
+              {activeTab !== 'storage' && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('storage')}
+                  className={`cursor-pointer whitespace-nowrap rounded-lg px-3 py-1.5 text-[11px] font-semibold transition ${
+                    storageAlertSeverity === 'full'
+                      ? 'bg-[#6E1D2C] text-[#FAF5EC] hover:bg-[#571622]'
+                      : 'bg-[#4A2E1B] text-[#FAF5EC] hover:bg-[#3A2213]'
+                  }`}
+                >
+                  Kelola Penyimpanan
+                </button>
+              )}
+            </div>
+          )}
+
           {errorMsg && (
             <div className="mb-5 flex items-center gap-2.5 rounded-2xl border border-[#4A2E1B]/30 bg-[#4A2E1B]/10 px-4 py-3 text-xs font-semibold text-[#3A2213]">
               <AlertTriangle className="h-4 w-4 shrink-0 text-[#7A5230]" />
@@ -438,7 +530,10 @@ export default function OrihourAdminPage() {
             </div>
           )}
 
-          {loading && vinyls.length === 0 && activeTab !== 'analytics' ? (
+          {loading &&
+          vinyls.length === 0 &&
+          activeTab !== 'analytics' &&
+          activeTab !== 'storage' ? (
             <div className="flex flex-col items-center justify-center rounded-[24px] border border-[#E5D7C3] bg-[#FAF5EC]/80 py-20 text-center">
               <Disc3 className="h-7 w-7 animate-spin text-[#4A2E1B]" />
               <p className="mt-3 font-mono text-xs text-[#655040]">
@@ -491,6 +586,15 @@ export default function OrihourAdminPage() {
                 <RoomWalletTab
                   config={config}
                   onSaveSettings={handleSaveRoomSettings}
+                />
+              )}
+
+              {activeTab === 'storage' && (
+                <StoragePoolTab
+                  overview={storageOverview}
+                  loading={storageLoading}
+                  onRefresh={loadStorageOverview}
+                  onOverviewUpdated={setStorageOverview}
                 />
               )}
 

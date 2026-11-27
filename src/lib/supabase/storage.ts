@@ -1,60 +1,157 @@
-import { createSupabaseBrowserClient } from './client';
+export const STORAGE_UPDATED_EVENT = 'orihour:storage-updated';
 
-export type MediaFolder = 'covers' | 'posters' | 'avatars' | 'audio';
-
-function sanitizeFileSlug(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/\.[^/.]+$/, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 42) || 'media';
+interface PresignResponse {
+  accountId: string;
+  accountName: string;
+  provider: 'supabase' | 'r2';
+  uploadUrl: string;
+  publicUrl: string;
+  objectKey: string;
+  didFailover?: boolean;
+  failoverFromName?: string | null;
+  projectedUsagePct?: number;
+  nearLimitWarning?: boolean;
+  error?: string;
 }
 
+function resolveMimeType(fileOrBlob: File | Blob, extension?: string): string {
+  if (fileOrBlob.type && fileOrBlob.type.trim()) {
+    return fileOrBlob.type;
+  }
+
+  const ext = (extension || '').toLowerCase().replace(/^\./, '');
+  const map: Record<string, string> = {
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    webp: 'image/webp',
+    gif: 'image/gif',
+    svg: 'image/svg+xml',
+    mp3: 'audio/mpeg',
+    mpeg: 'audio/mpeg',
+    m4a: 'audio/mp4',
+    mp4: 'audio/mp4',
+    wav: 'audio/wav',
+    ogg: 'audio/ogg',
+    flac: 'audio/flac',
+  };
+
+  return map[ext] || 'application/octet-stream';
+}
+
+function inferExtension(fileOrBlob: File | Blob, explicitExt?: string): string {
+  if (explicitExt && explicitExt.trim()) {
+    return explicitExt.trim().replace(/^\./, '').toLowerCase();
+  }
+  if (typeof File !== 'undefined' && fileOrBlob instanceof File) {
+    const parts = fileOrBlob.name.split('.');
+    if (parts.length > 1) {
+      return parts[parts.length - 1].toLowerCase();
+    }
+  }
+  const mime = (fileOrBlob.type || '').toLowerCase();
+  if (mime.includes('jpeg')) return 'jpg';
+  if (mime.includes('png')) return 'png';
+  if (mime.includes('webp')) return 'webp';
+  if (mime.includes('mpeg') || mime.includes('mp3')) return 'mp3';
+  if (mime.includes('wav')) return 'wav';
+  if (mime.includes('ogg')) return 'ogg';
+  if (mime.includes('flac')) return 'flac';
+  if (mime.includes('mp4') || mime.includes('m4a')) return 'm4a';
+  return 'bin';
+}
+
+/**
+ * Mengunggah media (cover, MP3, poster, avatar) melalui Multi-Storage Pool
+ * (mendukung multi-akun Supabase Storage & Cloudflare R2 dengan Auto-Failover).
+ */
 export async function uploadMediaToSupabase(
-  fileOrBlob: Blob | File,
-  folder: MediaFolder,
+  fileOrBlob: File | Blob,
+  folder: string,
   baseName: string,
   extension?: string
 ): Promise<string> {
-  const supabase = createSupabaseBrowserClient();
+  const ext = inferExtension(fileOrBlob, extension);
+  const contentType = resolveMimeType(fileOrBlob, ext);
+  const sizeBytes = fileOrBlob.size || 0;
 
-  const inferredExt =
-    extension ||
-    (fileOrBlob instanceof File && fileOrBlob.name.includes('.')
-      ? fileOrBlob.name.split('.').pop()?.toLowerCase()
-      : fileOrBlob.type === 'image/png'
-      ? 'png'
-      : fileOrBlob.type === 'image/webp'
-      ? 'webp'
-      : fileOrBlob.type.startsWith('audio/')
-      ? 'mp3'
-      : 'jpg');
-
-  const safeSlug = sanitizeFileSlug(baseName);
-  const uniqueStamp = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  const path = `${folder}/${safeSlug}-${uniqueStamp}.${inferredExt || 'jpg'}`;
-
-  const contentType =
-    fileOrBlob.type ||
-    (folder === 'audio' ? 'audio/mpeg' : 'image/jpeg');
-
-  const { error } = await supabase.storage
-    .from('orihour-media')
-    .upload(path, fileOrBlob, {
+  // 1. Minta Signed Upload URL dari server (server memilih akun aktif / auto-failover)
+  const presignRes = await fetch('/api/admin/storage/presign', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      folder,
+      baseName,
+      extension: ext,
       contentType,
-      cacheControl: '31536000',
-      upsert: false,
+      sizeBytes,
+    }),
+  });
+
+  const presignData = (await presignRes.json().catch(() => ({}))) as PresignResponse;
+
+  if (!presignRes.ok || !presignData.uploadUrl || !presignData.publicUrl) {
+    throw new Error(
+      presignData.error ||
+        'Gagal menyiapkan penyimpanan. Cek status kuota akun di tab Penyimpanan.'
+    );
+  }
+
+  // 2. Upload langsung dari browser ke Supabase Storage / Cloudflare R2 (lolos limit 4.5 MB Vercel)
+  let uploadRes: Response;
+  try {
+    uploadRes = await fetch(presignData.uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': contentType,
+      },
+      body: fileOrBlob,
     });
-
-  if (error) {
-    throw new Error(`Gagal upload ke Supabase Storage: ${error.message}`);
+  } catch {
+    const hint =
+      presignData.provider === 'r2'
+        ? ' Pastikan aturan CORS di bucket Cloudflare R2 sudah mengizinkan origin website ini (method PUT & GET).'
+        : ' Periksa koneksi internet atau status proyek Supabase tujuan.';
+    throw new Error(`Upload ke "${presignData.accountName}" gagal terhubung.${hint}`);
   }
 
-  const { data } = supabase.storage.from('orihour-media').getPublicUrl(path);
-  if (!data?.publicUrl) {
-    throw new Error('Gagal mendapatkan URL publik media.');
+  if (!uploadRes.ok) {
+    const errText = await uploadRes.text().catch(() => '');
+    const hint =
+      presignData.provider === 'r2'
+        ? ' Cek izin API Token (Object Read & Write) dan aturan CORS pada bucket R2.'
+        : ' Cek apakah bucket sudah dibuat (public) dan kuota akun masih tersedia.';
+    throw new Error(
+      `Gagal mengunggah ke "${presignData.accountName}" (HTTP ${uploadRes.status}).${hint}${
+        errText ? ` [${errText.slice(0, 120)}]` : ''
+      }`
+    );
   }
 
-  return data.publicUrl;
+  // 3. Laporkan ukuran file ke database utama agar progress bar kuota langsung ter-update
+  await fetch('/api/admin/storage/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      accountId: presignData.accountId,
+      sizeBytes,
+    }),
+  }).catch(() => {});
+
+  // Beritahu header Panel Admin untuk langsung menyegarkan banner peringatan kapasitas
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent(STORAGE_UPDATED_EVENT, {
+        detail: {
+          accountId: presignData.accountId,
+          accountName: presignData.accountName,
+          didFailover: Boolean(presignData.didFailover),
+          failoverFromName: presignData.failoverFromName || null,
+          nearLimitWarning: Boolean(presignData.nearLimitWarning),
+        },
+      })
+    );
+  }
+
+  return presignData.publicUrl;
 }
