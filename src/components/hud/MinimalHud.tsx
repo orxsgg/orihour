@@ -74,7 +74,6 @@ const WEATHER_ORDER: WeatherType[] = ['CLEAR', 'CLOUDY', 'RAIN', 'BREEZY'];
 
 export default function MinimalHud(props: MinimalHudProps) {
   const [showMixer, setShowMixer] = useState(false);
-  // Default closed when entering the 3D room
   const [controlsOpen, setControlsOpen] = useState(false);
   const [musicVol, setMusicVol] = useState(0.75);
   const [rainVol, setRainVol] = useState(0.35);
@@ -107,7 +106,6 @@ export default function MinimalHud(props: MinimalHudProps) {
       props.onNextTrack
   );
 
-  // Separated Title (line 1) & Artist (line 2)
   const titleLine = props.activeVinyl
     ? props.activeTrack
       ? props.activeTrack.title
@@ -186,7 +184,7 @@ export default function MinimalHud(props: MinimalHudProps) {
           </nav>
         </div>
 
-        {/* Mobile & Tablet (< lg): Clean 2-Line Adaptive Bar (No messy multi-row wrap) */}
+        {/* Mobile & Tablet (< lg): Clean 2-Line Adaptive Bar */}
         <div className="flex flex-col gap-2 lg:hidden">
           <div className="flex items-center justify-between gap-2">
             <button
@@ -204,7 +202,6 @@ export default function MinimalHud(props: MinimalHudProps) {
                 className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-[#FAF5EC]/30 bg-[#2A1A10]/72 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
               >
                 <Library className="h-3 w-3" />
-                <span className="hidden xs:inline">COLLECTION</span>
                 <span>({props.vinylCount})</span>
               </button>
 
@@ -218,7 +215,6 @@ export default function MinimalHud(props: MinimalHudProps) {
                 }`}
               >
                 <Pin className="h-3 w-3" />
-                <span className="hidden xs:inline">PINBOARD</span>
                 <span>({props.postcardCount})</span>
               </button>
             </div>
@@ -278,9 +274,9 @@ export default function MinimalHud(props: MinimalHudProps) {
         </div>
       )}
 
-      {/* Ambient Sound Mixer Popover */}
+      {/* Ambient Sound Mixer Popover — Left-anchored on Mobile, Right-anchored on Desktop */}
       {showMixer && controlsOpen && (
-        <div className="fixed right-4 bottom-28 z-30 w-64 rounded-xl border border-[#E6C79C]/30 bg-[#1F140D]/92 p-4 text-[#FAF5EC] shadow-2xl backdrop-blur-xl sm:right-6 md:bottom-16">
+        <div className="fixed bottom-48 left-4 z-30 w-64 rounded-xl border border-[#E6C79C]/30 bg-[#1F140D]/92 p-4 text-[#FAF5EC] shadow-2xl backdrop-blur-xl md:right-6 md:bottom-16 md:left-auto">
           <div className="mb-3 flex items-center justify-between">
             <p className="font-mono text-[11px] font-semibold tracking-wider text-[#E6C79C]">
               AMBIENT MIXER
@@ -334,13 +330,15 @@ export default function MinimalHud(props: MinimalHudProps) {
 
       {/* Subtle Hover Tooltip */}
       {props.hoverLabel && (
-        <div className="pointer-events-none fixed bottom-24 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md border border-[#E6C79C]/25 bg-[#1C120C]/85 px-3 py-1 font-mono text-[11px] text-[#FAF5EC] backdrop-blur-md sm:bottom-16">
+        <div className="pointer-events-none fixed bottom-28 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md border border-[#E6C79C]/25 bg-[#1C120C]/85 px-3 py-1 font-mono text-[11px] text-[#FAF5EC] backdrop-blur-md md:bottom-16">
           {props.hoverLabel}
         </div>
       )}
 
-      {/* Bottom Corner Micro-Controls */}
-      <footer className="pointer-events-none fixed right-0 bottom-0 left-0 z-20 flex flex-col-reverse items-stretch justify-between gap-2.5 px-4 py-3.5 sm:flex-row sm:items-end sm:gap-3 sm:px-6 sm:py-4">
+      {/* Bottom Corner Micro-Controls
+          - Mobile (< md): Stacked on left — [OPTIONS] [BACK TO DESK] right above the song title & player
+          - Desktop (md+): Player bottom-left, [BACK TO DESK] [inline options] [OPTIONS] bottom-right */}
+      <footer className="pointer-events-none fixed right-0 bottom-0 left-0 z-20 flex flex-col-reverse items-start justify-between gap-2.5 px-4 py-3.5 sm:px-6 sm:py-4 md:flex-row md:items-end md:gap-3">
         {/* Bottom-Left Player — Separated Title (Top) & Artist (Bottom) */}
         {showTrackNav ? (
           <div className="pointer-events-auto flex w-full max-w-[300px] flex-col gap-1.5 text-[#FAF5EC] drop-shadow-[0_1px_6px_rgba(0,0,0,0.8)] sm:w-[290px]">
@@ -497,11 +495,13 @@ export default function MinimalHud(props: MinimalHudProps) {
           </div>
         )}
 
-        {/* Bottom-Right: Adaptive Controls (Desktop inline bar; Mobile clean floating popover so BACK TO DESK never jumps) */}
-        <div className="pointer-events-auto relative flex items-center justify-end gap-1.5 font-mono text-[10px] font-semibold tracking-wider text-[#FAF5EC] sm:text-[10.5px]">
-          {/* Mobile Popover Panel when OPTIONS is open (< md) */}
+        {/* Controls Container:
+            - Mobile (< md): Left-aligned above song title -> [OPTIONS] then [BACK TO DESK] on its right
+            - Desktop (md+): Right-aligned -> [BACK TO DESK] then [inline options] then [OPTIONS] */}
+        <div className="pointer-events-auto relative flex items-center justify-start gap-1.5 font-mono text-[10px] font-semibold tracking-wider text-[#FAF5EC] sm:text-[10.5px] md:justify-end">
+          {/* Mobile Popover Panel when OPTIONS is open (< md) — Anchored to Left above OPTIONS */}
           {controlsOpen && (
-            <div className="absolute right-0 bottom-10 z-30 flex w-60 flex-col gap-1.5 rounded-2xl border border-[#E6C79C]/35 bg-[#1B120C]/92 p-2.5 shadow-2xl backdrop-blur-xl md:hidden">
+            <div className="absolute bottom-10 left-0 z-30 flex w-60 flex-col gap-1.5 rounded-2xl border border-[#E6C79C]/35 bg-[#1B120C]/92 p-2.5 shadow-2xl backdrop-blur-xl md:hidden">
               {props.weatherBadgeText && (
                 <p className="truncate px-1.5 font-mono text-[9px] font-medium text-[#E6C79C]/80">
                   {props.weatherBadgeText}
@@ -569,12 +569,38 @@ export default function MinimalHud(props: MinimalHudProps) {
             </div>
           )}
 
-          {/* Always-anchored Back-to-Desk button (cleanly stays beside OPTIONS on both Mobile & Desktop) */}
+          {/* Options Toggle Button: Leftmost on Mobile (order-1), Rightmost on Desktop (md:order-3) */}
+          <button
+            type="button"
+            onClick={() => {
+              setControlsOpen((prev) => {
+                if (prev) setShowMixer(false);
+                return !prev;
+              });
+            }}
+            className="order-1 inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg border border-[#E6C79C]/40 bg-[#4A2E1B]/85 px-2.5 py-1.5 text-[#FAF5EC] backdrop-blur-md transition hover:bg-[#3A2213] md:order-3 md:py-1"
+            title={controlsOpen ? 'Hide settings options' : 'Show settings options'}
+          >
+            {controlsOpen ? (
+              <>
+                <ChevronRight className="hidden h-3.5 w-3.5 md:block" />
+                <X className="h-3.5 w-3.5 md:hidden" />
+                <span className="md:hidden">CLOSE</span>
+              </>
+            ) : (
+              <>
+                <Settings2 className="h-3.5 w-3.5" />
+                <span>OPTIONS</span>
+              </>
+            )}
+          </button>
+
+          {/* Back-to-Desk Button: Right beside OPTIONS on Mobile (order-2), Left of inline options on Desktop (md:order-1) */}
           {props.cameraFocus !== 'DESK' && (
             <button
               type="button"
               onClick={() => props.onChangeFocus('DESK')}
-              className="cursor-pointer whitespace-nowrap rounded-lg border border-[#E6C79C]/45 bg-[#2A1A10]/82 px-2.5 py-1.5 backdrop-blur-md transition hover:bg-[#4A2E1B] md:py-1"
+              className="order-2 cursor-pointer whitespace-nowrap rounded-lg border border-[#E6C79C]/45 bg-[#2A1A10]/82 px-2.5 py-1.5 backdrop-blur-md transition hover:bg-[#4A2E1B] md:order-1 md:py-1"
             >
               <span>{backLabel}</span>
               <span className="hidden md:inline"> · ESC</span>
@@ -583,7 +609,7 @@ export default function MinimalHud(props: MinimalHudProps) {
 
           {/* Desktop Inline Controls Row (md+) */}
           {controlsOpen && (
-            <div className="hidden items-center gap-1.5 md:flex">
+            <div className="hidden items-center gap-1.5 md:order-2 md:flex">
               <button
                 type="button"
                 onClick={props.onToggleTimeScrubber}
@@ -644,32 +670,6 @@ export default function MinimalHud(props: MinimalHudProps) {
               </button>
             </div>
           )}
-
-          {/* Options Toggle Button */}
-          <button
-            type="button"
-            onClick={() => {
-              setControlsOpen((prev) => {
-                if (prev) setShowMixer(false);
-                return !prev;
-              });
-            }}
-            className="inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg border border-[#E6C79C]/40 bg-[#4A2E1B]/85 px-2.5 py-1.5 text-[#FAF5EC] backdrop-blur-md transition hover:bg-[#3A2213] md:py-1"
-            title={controlsOpen ? 'Hide settings options' : 'Show settings options'}
-          >
-            {controlsOpen ? (
-              <>
-                <ChevronRight className="hidden h-3.5 w-3.5 md:block" />
-                <X className="h-3.5 w-3.5 md:hidden" />
-                <span className="md:hidden">CLOSE</span>
-              </>
-            ) : (
-              <>
-                <Settings2 className="h-3.5 w-3.5" />
-                <span>OPTIONS</span>
-              </>
-            )}
-          </button>
         </div>
       </footer>
     </>

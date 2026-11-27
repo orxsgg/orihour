@@ -121,6 +121,7 @@ export default function LofiCatalogView({
     returnTarget === 'ENTRY' ? 'Back to Welcome' : 'Return to 3D Room';
 
   const activeHasMultiTracks = Boolean(activeVinyl && hasMultipleTracks(activeVinyl));
+  const canStepTracks = Boolean(activeHasMultiTracks && onPrevTrack && onNextTrack);
   const activeTitleText = activeTrack
     ? activeTrack.title
     : activeVinyl?.title ?? '';
@@ -477,8 +478,7 @@ export default function LofiCatalogView({
         </main>
       </div>
 
-      {/* In-Flow Flex Footer Player — NEVER overlaps/clips cards on mobile or desktop!
-          Desktop: Left = Cover + Info | Center = Controls & Seek Bar | Right = Balanced Spacer */}
+      {/* In-Flow Flex Footer Player — Identical centered layout for both 1-track & multi-track releases */}
       {activeVinyl && (
         <footer className="z-30 shrink-0 border-t border-[#E5D7C3] bg-[#FAF5EC]/96 shadow-[0_-10px_30px_rgba(24,17,12,0.1)] backdrop-blur-xl">
           <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-2.5 px-4 py-2.5 sm:px-6 md:grid-cols-3 md:gap-4 md:py-3">
@@ -509,70 +509,31 @@ export default function LofiCatalogView({
               </div>
             </div>
 
-            {/* Center: Controls + Seek Bar */}
+            {/* Center: Unified [Prev] [Play/Pause] [Next] + Seek Bar Underneath (Prev/Next dimmed & disabled on 1-song releases) */}
             <div className="flex w-full justify-center">
-              {activeHasMultiTracks && onPrevTrack && onNextTrack ? (
-                <div className="flex w-full max-w-md flex-col items-center gap-1.5">
-                  <div className="flex items-center gap-2.5">
-                    <button
-                      type="button"
-                      onClick={onPrevTrack}
-                      className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white text-[#4A2E1B] shadow-xs transition hover:bg-[#EFE4D3]"
-                      aria-label="Previous track"
-                      title="Previous track"
-                    >
-                      <SkipBack className="h-3.5 w-3.5 fill-current" />
-                    </button>
+              <div className="flex w-full max-w-md flex-col items-center gap-1.5">
+                <div className="flex items-center gap-2.5">
+                  <button
+                    type="button"
+                    disabled={!canStepTracks}
+                    onClick={() => {
+                      if (canStepTracks && onPrevTrack) onPrevTrack();
+                    }}
+                    className={`flex h-7 w-7 items-center justify-center rounded-full border transition ${
+                      canStepTracks
+                        ? 'cursor-pointer border-[#4A2E1B]/20 bg-white text-[#4A2E1B] shadow-xs hover:bg-[#EFE4D3]'
+                        : 'cursor-not-allowed border-[#4A2E1B]/14 bg-[#241A13]/18 text-[#241A13]/38'
+                    }`}
+                    aria-label="Previous track"
+                    title={canStepTracks ? 'Previous track' : 'Single track release'}
+                  >
+                    <SkipBack className="h-3.5 w-3.5 fill-current" />
+                  </button>
 
-                    <button
-                      type="button"
-                      onClick={() => onSelectAndPlay(activeVinyl, activeTrack)}
-                      className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-[#4A2E1B] text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] sm:h-9 sm:w-9"
-                      aria-label={isPlaying ? 'Pause' : 'Play'}
-                    >
-                      {isPlaying ? (
-                        <Pause className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-                      ) : (
-                        <Play className="ml-0.5 h-3.5 w-3.5 sm:h-4 sm:w-4" />
-                      )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={onNextTrack}
-                      className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white text-[#4A2E1B] shadow-xs transition hover:bg-[#EFE4D3]"
-                      aria-label="Next track"
-                      title="Next track"
-                    >
-                      <SkipForward className="h-3.5 w-3.5 fill-current" />
-                    </button>
-                  </div>
-
-                  <div className="relative flex w-full items-center">
-                    <div className="pointer-events-none h-1.5 w-full overflow-hidden rounded-full bg-[#4A2E1B]/15">
-                      <div
-                        className="h-full rounded-full bg-[#4A2E1B] transition-[width] duration-150"
-                        style={{ width: `${Math.round(progressRatio * 100)}%` }}
-                      />
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.005}
-                      value={progressRatio}
-                      onChange={(e) => onSeekProgress(parseFloat(e.target.value))}
-                      aria-label="Seek playback position"
-                      className="absolute inset-0 h-5 w-full -translate-y-1.5 cursor-pointer opacity-0"
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div className="flex w-full max-w-md items-center gap-3">
                   <button
                     type="button"
                     onClick={() => onSelectAndPlay(activeVinyl, activeTrack)}
-                    className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#4A2E1B] text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] sm:h-9 sm:w-9"
+                    className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-[#4A2E1B] text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] sm:h-9 sm:w-9"
                     aria-label={isPlaying ? 'Pause' : 'Play'}
                   >
                     {isPlaying ? (
@@ -582,29 +543,46 @@ export default function LofiCatalogView({
                     )}
                   </button>
 
-                  <div className="relative flex flex-1 items-center">
-                    <div className="pointer-events-none h-1.5 w-full overflow-hidden rounded-full bg-[#4A2E1B]/15">
-                      <div
-                        className="h-full rounded-full bg-[#4A2E1B] transition-[width] duration-150"
-                        style={{ width: `${Math.round(progressRatio * 100)}%` }}
-                      />
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.005}
-                      value={progressRatio}
-                      onChange={(e) => onSeekProgress(parseFloat(e.target.value))}
-                      aria-label="Seek playback position"
-                      className="absolute inset-0 h-5 w-full -translate-y-1.5 cursor-pointer opacity-0"
+                  <button
+                    type="button"
+                    disabled={!canStepTracks}
+                    onClick={() => {
+                      if (canStepTracks && onNextTrack) onNextTrack();
+                    }}
+                    className={`flex h-7 w-7 items-center justify-center rounded-full border transition ${
+                      canStepTracks
+                        ? 'cursor-pointer border-[#4A2E1B]/20 bg-white text-[#4A2E1B] shadow-xs hover:bg-[#EFE4D3]'
+                        : 'cursor-not-allowed border-[#4A2E1B]/14 bg-[#241A13]/18 text-[#241A13]/38'
+                    }`}
+                    aria-label="Next track"
+                    title={canStepTracks ? 'Next track' : 'Single track release'}
+                  >
+                    <SkipForward className="h-3.5 w-3.5 fill-current" />
+                  </button>
+                </div>
+
+                <div className="relative flex w-full items-center">
+                  <div className="pointer-events-none h-1.5 w-full overflow-hidden rounded-full bg-[#4A2E1B]/15">
+                    <div
+                      className="h-full rounded-full bg-[#4A2E1B] transition-[width] duration-150"
+                      style={{ width: `${Math.round(progressRatio * 100)}%` }}
                     />
                   </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.005}
+                    value={progressRatio}
+                    onChange={(e) => onSeekProgress(parseFloat(e.target.value))}
+                    aria-label="Seek playback position"
+                    className="absolute inset-0 h-5 w-full -translate-y-1.5 cursor-pointer opacity-0"
+                  />
                 </div>
-              )}
+              </div>
             </div>
 
-            {/* Right: Desktop Balancing Column (keeps center controls dead-center) */}
+            {/* Right: Desktop Balancing Column */}
             <div className="hidden justify-end md:flex">
               <span className="rounded-full border border-[#4A2E1B]/14 bg-[#F3E9DB]/80 px-2.5 py-1 font-mono text-[9.5px] font-semibold text-[#6E5643] uppercase">
                 {activeVinyl.releaseType}
