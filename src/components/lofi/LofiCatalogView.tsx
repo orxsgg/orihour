@@ -33,6 +33,7 @@ import {
   vinylMatchesGenre,
 } from '@/lib/genreUtils';
 import { getSleeveDataUrl } from '@/components/room-3d/textures';
+import MarqueeText from '@/components/ui/MarqueeText';
 
 interface LofiCatalogViewProps {
   config: RoomConfig;
@@ -120,6 +121,12 @@ export default function LofiCatalogView({
     returnTarget === 'ENTRY' ? 'Back to Welcome' : 'Return to 3D Room';
 
   const activeHasMultiTracks = Boolean(activeVinyl && hasMultipleTracks(activeVinyl));
+  const activeTitleText = activeTrack
+    ? activeTrack.title
+    : activeVinyl?.title ?? '';
+  const activeSubText = activeVinyl
+    ? `${activeVinyl.artist}${activeTrack ? ` · ${activeVinyl.title}` : ''}`
+    : '';
 
   return (
     <div
@@ -467,7 +474,7 @@ export default function LofiCatalogView({
         )}
       </main>
 
-      {/* Sticky Bottom Now Playing Bar */}
+      {/* Sticky Bottom Now Playing Bar with Conditional Marquee */}
       {activeVinyl && (
         <div className="fixed inset-x-0 bottom-0 z-40 border-t border-[#E5D7C3] bg-[#FAF5EC]/95 shadow-[0_-12px_36px_rgba(24,17,12,0.14)] backdrop-blur-xl">
           <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-3 sm:px-6">
@@ -477,23 +484,27 @@ export default function LofiCatalogView({
                 alt={activeVinyl.title}
                 className="h-11 w-11 shrink-0 rounded-xl border border-black/10 object-cover"
               />
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="inline-flex items-center gap-1 font-mono text-[9px] font-semibold tracking-wider text-[#7A5230] uppercase">
                   <Music2 className="h-2.5 w-2.5" />
                   {isPlaying ? 'Now Playing' : 'Paused'}
                 </p>
-                <p className="truncate font-serif text-lg leading-tight text-[#241A13]">
-                  {activeTrack ? activeTrack.title : activeVinyl.title}
-                </p>
-                <p className="truncate text-[11px] text-[#655040]">
-                  {activeVinyl.artist}
-                  {activeTrack ? ` · ${activeVinyl.title}` : ''}
-                </p>
+                <MarqueeText
+                  measureKey={`lofi-title-${activeVinyl.id}-${activeTrack?.id ?? 'single'}-${activeTitleText}`}
+                  className="font-serif text-lg leading-tight text-[#241A13]"
+                >
+                  {activeTitleText}
+                </MarqueeText>
+                <MarqueeText
+                  measureKey={`lofi-sub-${activeVinyl.id}-${activeTrack?.id ?? 'single'}-${activeSubText}`}
+                  className="text-[11px] text-[#655040]"
+                >
+                  {activeSubText}
+                </MarqueeText>
               </div>
             </div>
 
             {activeHasMultiTracks && onPrevTrack && onNextTrack ? (
-              /* Multi-track: Prev/Play/Next centered on top, progress bar neatly underneath */
               <div className="flex w-full flex-col items-center gap-2 sm:w-80">
                 <div className="flex items-center gap-2.5">
                   <button
@@ -550,7 +561,6 @@ export default function LofiCatalogView({
                 </div>
               </div>
             ) : (
-              /* Single track: Play/Pause + bar side-by-side */
               <div className="flex w-full items-center gap-3 sm:w-80">
                 <button
                   type="button"

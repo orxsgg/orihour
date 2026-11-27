@@ -22,6 +22,7 @@ import {
   WeatherType,
 } from '@/types/orihour';
 import { hasMultipleTracks } from '@/lib/genreUtils';
+import MarqueeText from '@/components/ui/MarqueeText';
 
 interface MinimalHudProps {
   activeVinyl: VinylRecord | null;
@@ -105,6 +106,7 @@ export default function MinimalHud(props: MinimalHudProps) {
   const displayTitle = props.activeTrack
     ? `${props.activeTrack.title} (${props.activeVinyl?.title ?? ''})`
     : props.activeVinyl?.title ?? '';
+  const marqueeKey = `${props.activeVinyl?.id ?? 'empty'}-${props.activeTrack?.id ?? 'single'}-${displayTitle}-${props.activeVinyl?.artist ?? ''}`;
 
   return (
     <>
@@ -248,9 +250,7 @@ export default function MinimalHud(props: MinimalHudProps) {
 
       {/* Bottom Corner Micro-Controls */}
       <footer className="pointer-events-none fixed right-0 bottom-0 left-0 z-20 flex flex-wrap items-end justify-between gap-3 px-6 py-4">
-        {/* Bottom-Left Player:
-            - Multi-track (>1 song): Prev / Play-Pause / Next + Title on top, proportional seek bar underneath
-            - Single track (1 song) or empty: exact original layout (Play/Pause left, title + slim bar on right) */}
+        {/* Bottom-Left Player with Conditional Smooth Marquee */}
         {showTrackNav ? (
           <div className="pointer-events-auto flex flex-col gap-1.5 text-[#FAF5EC] drop-shadow-[0_1px_6px_rgba(0,0,0,0.75)]">
             <div className="flex items-center gap-2.5">
@@ -293,15 +293,18 @@ export default function MinimalHud(props: MinimalHudProps) {
               <button
                 type="button"
                 onClick={props.onOpenLinerNotes}
-                className="block max-w-[200px] cursor-pointer truncate text-left leading-none transition hover:text-[#E6C79C] sm:max-w-[280px]"
+                className="block max-w-[200px] min-w-0 cursor-pointer overflow-hidden text-left leading-none transition hover:text-[#E6C79C] sm:max-w-[260px]"
               >
-                <p className="truncate font-mono text-[11px] font-semibold tracking-wide text-[#FAF5EC]">
+                <MarqueeText
+                  measureKey={marqueeKey}
+                  className="font-mono text-[11px] font-semibold tracking-wide text-[#FAF5EC]"
+                >
                   {displayTitle}
                   <span className="font-normal text-[#FAF5EC]/72">
                     {' '}
                     - {props.activeVinyl?.artist}
                   </span>
-                </p>
+                </MarqueeText>
               </button>
             </div>
 
@@ -353,9 +356,12 @@ export default function MinimalHud(props: MinimalHudProps) {
                   if (hasRecord) props.onOpenLinerNotes();
                   else props.onChangeFocus('CRATE');
                 }}
-                className="block max-w-[240px] cursor-pointer truncate text-left leading-none transition hover:text-[#E6C79C] sm:max-w-[320px]"
+                className="block max-w-[220px] min-w-0 cursor-pointer overflow-hidden text-left leading-none transition hover:text-[#E6C79C] sm:max-w-[290px]"
               >
-                <p className="truncate font-mono text-[11px] font-semibold tracking-wide text-[#FAF5EC]">
+                <MarqueeText
+                  measureKey={marqueeKey}
+                  className="font-mono text-[11px] font-semibold tracking-wide text-[#FAF5EC]"
+                >
                   {props.activeVinyl ? (
                     <>
                       {displayTitle}
@@ -369,7 +375,7 @@ export default function MinimalHud(props: MinimalHudProps) {
                       No Record on Platter · Pick from Rack
                     </span>
                   )}
-                </p>
+                </MarqueeText>
               </button>
 
               {/* Slim 2px Seekable Bar aligned cleanly under the title */}

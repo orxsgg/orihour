@@ -19,6 +19,32 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Smooth conditional marquee for overflowing song titles & artist labels */
+@keyframes orihour-marquee {
+  0%,
+  14% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(calc(-1 * var(--marquee-distance, 0px)), 0, 0);
+  }
+}
+
+.orihour-marquee-track {
+  will-change: transform;
+  animation: orihour-marquee var(--marquee-duration, 10s) linear infinite;
+}
+
+.orihour-marquee-track:hover {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orihour-marquee-track {
+    animation: none;
+  }
+}
+
 /* Custom warm scrollbar for Orihour modals, catalog & admin panels */
 .orihour-scroll {
   scrollbar-width: thin;
