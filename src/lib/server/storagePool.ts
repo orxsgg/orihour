@@ -205,8 +205,6 @@ export function normalizeB2Endpoint(raw: string): string {
   try {
     const parsed = new URL(withProto);
     const host = parsed.hostname.toLowerCase();
-    // Jika user menempel virtual-hosted URL (bucket.s3.<region>.backblazeb2.com),
-    // rapikan menjadi path-style endpoint (https://s3.<region>.backblazeb2.com)
     const b2Match = host.match(/(?:^|\.)s3\.([a-z0-9-]+)\.backblazeb2\.com$/i);
     if (b2Match?.[1]) {
       return `https://s3.${b2Match[1]}.backblazeb2.com`;
@@ -244,10 +242,10 @@ export function resolveAccountCredentials(row: StorageAccountRow) {
   const endpointUrl = (row.endpoint_url || '').replace(/\/+$/, '');
   const bucket = (row.bucket || 'orihour-media').trim();
   const explicitPublic = (row.public_base_url || '').replace(/\/+$/, '');
-  const publicBaseUrl =
-    row.provider === 'b2'
-      ? explicitPublic || (endpointUrl && bucket ? `${endpointUrl}/${bucket}` : '')
-      : endpointUrl;
+
+  // Untuk Backblaze B2: jika public_base_url kosong, biarkan kosong
+  // agar otomatis memakai Private Signed Proxy (/api/media/b2/<id>/...)
+  const publicBaseUrl = row.provider === 'b2' ? explicitPublic : endpointUrl;
 
   return {
     endpointUrl,
@@ -482,8 +480,8 @@ function encodeS3Path(pathStr: string): string {
 function getSigV4Timestamps(now = new Date()) {
   const iso = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
   return {
-    amzDate: iso, // YYYYMMDDTHHMMSSZ
-    dateStamp: iso.slice(0, 8), // YYYYMMDD
+    amzDate: iso,
+    dateStamp: iso.slice(0, 8),
   };
 }
 
@@ -499,19 +497,19 @@ function getSigningKey(
   return hmacSha256(kService, 'aws4_request');
 }
 
-export function createB2PresignedPutUrl(params: {
+function createB2PresignedUrl(params: {
+  method: 'PUT' | 'GET' | 'HEAD';
   endpointUrl: string;
   bucket: string;
   objectKey: string;
   accessKeyId: string;
   secretAccessKey: string;
-  expiresSec?: number;
+  expiresSec: number;
 }): string {
   const parsed = new URL(params.endpointUrl);
   const host = parsed.host;
   const region = extractB2Region(params.endpointUrl);
   const service = 's3';
-  const expiresSec = params.expiresSec ?? 900;
   const { amzDate, dateStamp } = getSigV4Timestamps();
 
   const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
@@ -521,7 +519,7 @@ export function createB2PresignedPutUrl(params: {
     ['X-Amz-Algorithm', 'AWS4-HMAC-SHA256'],
     ['X-Amz-Credential', `${params.accessKeyId}/${credentialScope}`],
     ['X-Amz-Date', amzDate],
-    ['X-Amz-Expires', String(expiresSec)],
+    ['X-Amz-Expires', String(params.expiresSec)],
     ['X-Amz-SignedHeaders', 'host'],
   ];
 
@@ -532,7 +530,7 @@ export function createB2PresignedPutUrl(params: {
 
   const canonicalHeaders = `host:${host}\n`;
   const canonicalRequest = [
-    'PUT',
+    params.method,
     canonicalUri,
     canonicalQuery,
     canonicalHeaders,
@@ -554,6 +552,37 @@ export function createB2PresignedPutUrl(params: {
     .digest('hex');
 
   return `${parsed.origin}${canonicalUri}?${canonicalQuery}&X-Amz-Signature=${signature}`;
+}
+
+export function createB2PresignedPutUrl(params: {
+  endpointUrl: string;
+  bucket: string;
+  objectKey: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  expiresSec?: number;
+}): string {
+  return createB2PresignedUrl({
+    ...params,
+    method: 'PUT',
+    expiresSec: params.expiresSec ?? 900,
+  });
+}
+
+export function createB2PresignedReadUrl(params: {
+  endpointUrl: string;
+  bucket: string;
+  objectKey: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  method?: 'GET' | 'HEAD';
+  expiresSec?: number;
+}): string {
+  return createB2PresignedUrl({
+    ...params,
+    method: params.method === 'HEAD' ? 'HEAD' : 'GET',
+    expiresSec: params.expiresSec ?? 3600,
+  });
 }
 
 async function signedB2GetRequest(params: {
@@ -786,7 +815,7 @@ export async function pingStorageAccount(
     if (!res.ok) {
       return { ok: false, statusText: `HTTP ${res.status}` };
     }
-    return { ok: true, statusText: 'Online (B2 Ready)' };
+    return { ok: true, statusText: 'Online (B2 Private Ready)' };
   } catch (err) {
     return {
       ok: false,
@@ -872,6 +901,7 @@ export function selectUploadTargetAccount(
 export async function generatePresignedUploadForAccount(params: {
   account: StorageAccountRow;
   objectKey: string;
+  appOrigin?: string;
 }) {
   const creds = resolveAccountCredentials(params.account);
 
@@ -912,8 +942,8 @@ export async function generatePresignedUploadForAccount(params: {
     };
   }
 
-  // Backblaze B2 (S3-Compatible)
-  if (!creds.endpointUrl || !creds.accessKeyId || !creds.secret || !creds.publicBaseUrl) {
+  // Backblaze B2 (Mendukung Bucket Private via Signed Proxy maupun Public URL Kustom)
+  if (!creds.endpointUrl || !creds.accessKeyId || !creds.secret) {
     throw new Error(
       `Konfigurasi Backblaze B2 untuk "${params.account.name}" belum lengkap (butuh S3 Endpoint, keyID, dan applicationKey).`
     );
@@ -928,7 +958,15 @@ export async function generatePresignedUploadForAccount(params: {
     expiresSec: 900,
   });
 
-  const publicUrl = `${creds.publicBaseUrl}/${params.objectKey}`;
+  const encodedKey = params.objectKey
+    .split('/')
+    .map((seg) => encodeURIComponent(seg))
+    .join('/');
+
+  const safeOrigin = (params.appOrigin || 'https://orihour.vercel.app').replace(/\/+$/, '');
+  const publicUrl = creds.publicBaseUrl
+    ? `${creds.publicBaseUrl}/${encodedKey}`
+    : `${safeOrigin}/api/media/b2/${encodeURIComponent(params.account.id)}/${encodedKey}`;
 
   return {
     provider: 'b2' as const,

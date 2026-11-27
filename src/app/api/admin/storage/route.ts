@@ -31,7 +31,6 @@ export async function GET() {
     const db = getPrimaryAdminDb();
     const { accounts, settings } = await ensurePrimaryStorageBootstrapped(db);
 
-    // Auto-scan once if primary account has never been scanned yet
     const primary = accounts.find((a) => a.use_env_credentials && !a.last_scanned_at);
     if (primary) {
       try {
@@ -86,10 +85,8 @@ export async function POST(req: NextRequest) {
         ? normalizeB2Endpoint(rawEndpoint)
         : rawEndpoint.replace(/\/+$/, '');
     const customPublic = cleanStr(body.publicBaseUrl, 300).replace(/\/+$/, '');
-    const publicBaseUrl =
-      provider === 'b2'
-        ? customPublic || (endpointUrl ? `${endpointUrl}/${bucket}` : '')
-        : endpointUrl;
+    // Untuk Backblaze B2 Private Mode, publicBaseUrl dibiarkan kosong ('')
+    const publicBaseUrl = provider === 'b2' ? customPublic : endpointUrl;
     const accessKeyId = provider === 'b2' ? cleanStr(body.accessKeyId, 160) : '';
     const secret = cleanStr(body.secret, 500);
     const defaultQuotaMb = provider === 'b2' ? 10240 : 1024;
@@ -167,7 +164,6 @@ export async function POST(req: NextRequest) {
       updated_at: nowIso,
     };
 
-    // Verify connection immediately before saving
     const ping = await pingStorageAccount(candidateRow);
     if (!ping.ok) {
       return NextResponse.json(
@@ -178,7 +174,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Try initial usage scan
     let usedBytes = 0;
     let fileCount = 0;
     let lastScannedAt: string | null = null;
@@ -231,7 +226,6 @@ export async function PATCH(req: NextRequest) {
     const { accounts, settings } = await ensurePrimaryStorageBootstrapped(db);
     const nowIso = new Date().toISOString();
 
-    // 1. Update global pool settings (Auto-Failover & Warning Thresholds)
     if (action === 'update_settings') {
       const autoFailover =
         typeof body.autoFailover === 'boolean' ? body.autoFailover : settings.auto_failover;
@@ -262,7 +256,6 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json(buildStorageOverview(fresh.accounts, fresh.settings));
     }
 
-    // 2. Switch active storage account manually
     if (action === 'set_active') {
       const id = cleanStr(body.id, 80);
       const target = accounts.find((a) => a.id === id);
@@ -281,7 +274,6 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json(buildStorageOverview(fresh.accounts, fresh.settings));
     }
 
-    // 3. Scan Real Usage for one account or all accounts
     if (action === 'scan_usage') {
       const id = cleanStr(body.id, 80);
       const targets = id ? accounts.filter((a) => a.id === id) : accounts.filter((a) => a.is_enabled);
@@ -300,7 +292,8 @@ export async function PATCH(req: NextRequest) {
               file_count: scanned.fileCount,
               last_scanned_at: nowIso,
               last_ping_at: nowIso,
-              last_ping_status: acc.provider === 'b2' ? 'Online (B2 Ready)' : 'Online (Active)',
+              last_ping_status:
+                acc.provider === 'b2' ? 'Online (B2 Private Ready)' : 'Online (Active)',
               updated_at: nowIso,
             })
             .eq('id', acc.id);
@@ -325,7 +318,6 @@ export async function PATCH(req: NextRequest) {
       });
     }
 
-    // 4. Edit existing storage account details
     if (action === 'update_account') {
       const id = cleanStr(body.id, 80);
       const existing = accounts.find((a) => a.id === id);
@@ -334,8 +326,6 @@ export async function PATCH(req: NextRequest) {
       }
 
       const patch: Record<string, unknown> = { updated_at: nowIso };
-      let nextBucket = existing.bucket;
-      let nextEndpoint = existing.endpoint_url;
 
       if ('name' in body) {
         const name = cleanStr(body.name, 80);
@@ -353,15 +343,12 @@ export async function PATCH(req: NextRequest) {
       if (!existing.use_env_credentials) {
         if ('bucket' in body) {
           const bucket = cleanStr(body.bucket, 80);
-          if (bucket) {
-            patch.bucket = bucket;
-            nextBucket = bucket;
-          }
+          if (bucket) patch.bucket = bucket;
         }
         if ('endpointUrl' in body) {
           const rawEp = cleanStr(body.endpointUrl, 300);
           if (rawEp) {
-            nextEndpoint =
+            const nextEndpoint =
               existing.provider === 'b2'
                 ? normalizeB2Endpoint(rawEp)
                 : rawEp.replace(/\/+$/, '');
@@ -372,8 +359,7 @@ export async function PATCH(req: NextRequest) {
           }
         }
         if ('publicBaseUrl' in body && existing.provider === 'b2') {
-          const pub = cleanStr(body.publicBaseUrl, 300).replace(/\/+$/, '');
-          patch.public_base_url = pub || `${nextEndpoint}/${nextBucket}`;
+          patch.public_base_url = cleanStr(body.publicBaseUrl, 300).replace(/\/+$/, '');
         }
         if ('accessKeyId' in body && existing.provider === 'b2') {
           const ak = cleanStr(body.accessKeyId, 160);
@@ -437,7 +423,6 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // If deleted account was active, promote the highest-priority remaining enabled account
     if (target.is_active) {
       const remaining = accounts.filter((a) => a.id !== id && a.is_enabled);
       if (remaining[0]) {

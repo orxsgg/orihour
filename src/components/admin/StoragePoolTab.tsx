@@ -406,7 +406,9 @@ export default function StoragePoolTab({
     setConfirmState({
       title: `Hapus Akun "${acc.name}"?`,
       description:
-        'Akun ini hanya akan dilepas dari daftar rotasi upload di Orihour. File yang sudah terunggah di dalam bucket tidak akan dihapus sehingga lagu/gambar lama tetap bisa diputar.',
+        acc.provider === 'b2' && !acc.publicBaseUrl
+          ? 'Akun Backblaze B2 Private ini memakai Signed Proxy Orihour. Jika dilepas dari daftar, file audio/cover yang tersimpan di akun ini tidak dapat diputar sebelum akunnya dihubungkan kembali.'
+          : 'Akun ini hanya akan dilepas dari daftar rotasi upload di Orihour. File yang sudah terunggah di dalam bucket tidak akan dihapus sehingga lagu/gambar lama tetap bisa diputar.',
       confirmLabel: 'Lepas Akun',
       onConfirm: async () => {
         setBusyAction(`del-${acc.id}`);
@@ -674,20 +676,20 @@ export default function StoragePoolTab({
           </button>
         </div>
 
-        {/* Expandable Setup Guide for Backblaze B2 & Cron Keep-Alive */}
+        {/* Expandable Setup Guide for Backblaze B2 Private Mode & Cron Keep-Alive */}
         {showGuide && (
           <div className="grid grid-cols-1 gap-4 rounded-2xl border border-[#4A2E1B]/14 bg-white/88 p-4 text-xs text-[#3A2B20] lg:grid-cols-2">
             <div className="space-y-2">
               <p className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold tracking-wider text-[#7A5230] uppercase">
                 <Cloud className="h-3.5 w-3.5" />
-                SETUP BACKBLAZE B2 (10 GB GRATIS, TANPA KARTU KREDIT)
+                SETUP BACKBLAZE B2 PRIVATE (10 GB GRATIS, TANPA KARTU KREDIT)
               </p>
               <ol className="list-decimal space-y-1.5 pl-4 text-[11.5px] leading-relaxed">
                 <li>
                   Daftar akun gratis di <strong>backblaze.com/cloud-storage</strong> (cukup verifikasi email &amp; nomor HP, tidak perlu kartu kredit).
                 </li>
                 <li>
-                  Buka menu <strong>Buckets → Create a Bucket</strong>. Buat nama bucket unik (misal <code>orihour-media-01</code>), lalu wajib pilih <strong>Files in Bucket are: Public</strong>. Salin <strong>Endpoint</strong> yang tampil di kartu bucket (contoh: <code>s3.us-west-004.backblazeb2.com</code>).
+                  Buka menu <strong>Buckets → Create a Bucket</strong>. Isi nama unik (misal <code>orihour-media-01</code>), pilih <strong>Files in Bucket are: Private</strong> (100% gratis), lalu klik <strong>Create a Bucket</strong>. Salin <strong>Endpoint</strong> yang tampil (contoh: <code>s3.us-west-004.backblazeb2.com</code>).
                 </li>
                 <li>
                   Di kartu bucket tersebut, klik <strong>CORS Rules</strong> → pilih <strong>Share everything in this bucket with every origin</strong> → centang <strong>S3 Compatible API</strong> → klik <strong>Update CORS Rules</strong>.
@@ -696,7 +698,7 @@ export default function StoragePoolTab({
                   Buka menu kiri <strong>Application Keys → Add a New Application Key</strong>: pilih bucket kamu, set <strong>Type of Access: Read and Write</strong>, lalu klik <strong>Create New Key</strong>.
                 </li>
                 <li>
-                  Langsung salin <strong>keyID</strong> dan <strong>applicationKey</strong> (hanya tampil sekali), lalu masukkan ke form <strong>Tambah Backblaze B2</strong>.
+                  Salin <strong>keyID</strong> dan <strong>applicationKey</strong>, lalu masukkan ke form <strong>Tambah Backblaze B2</strong> (biarkan kolom <em>Public URL Kustom</em> kosong agar Orihour otomatis memakai Signed Proxy <code>/api/media/b2/...</code>).
                 </li>
               </ol>
             </div>
@@ -867,8 +869,10 @@ export default function StoragePoolTab({
                   </p>
                   {acc.provider === 'b2' && (
                     <p className="truncate">
-                      <span className="text-[#8A7360]">Public URL:</span>{' '}
-                      {acc.publicBaseUrl || '-'}
+                      <span className="text-[#8A7360]">Mode Akses:</span>{' '}
+                      {acc.publicBaseUrl
+                        ? `Public Kustom (${acc.publicBaseUrl})`
+                        : `Private Signed Proxy (/api/media/b2/${acc.id}/...)`}
                     </p>
                   )}
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1112,9 +1116,12 @@ export default function StoragePoolTab({
                             onChange={(e) =>
                               setEditing({ ...editing, publicBaseUrl: e.target.value })
                             }
-                            placeholder="Kosongkan untuk otomatis (https://s3.<region>.backblazeb2.com/<bucket>)"
+                            placeholder="Kosongkan untuk Mode Private Gratis (Signed Proxy otomatis)"
                             className="h-[36px] rounded-xl border border-[#4A2E1B]/18 bg-white px-3 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                           />
+                          <p className="text-[10.5px] text-[#7A624E]">
+                            Biarkan kosong jika memakai bucket <strong>Private</strong> Backblaze B2 (gratis tanpa kartu kredit).
+                          </p>
                         </div>
 
                         <div className="flex flex-col gap-1">

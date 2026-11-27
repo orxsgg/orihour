@@ -63,7 +63,7 @@ function inferExtension(fileOrBlob: File | Blob, explicitExt?: string): string {
 
 /**
  * Mengunggah media (cover, MP3, poster, avatar) melalui Multi-Storage Pool
- * (mendukung multi-akun Supabase Storage & Backblaze B2 dengan Auto-Failover).
+ * (mendukung multi-akun Supabase Storage & Backblaze B2 Private dengan Auto-Failover).
  */
 export async function uploadMediaToSupabase(
   fileOrBlob: File | Blob,
@@ -119,7 +119,7 @@ export async function uploadMediaToSupabase(
     const errText = await uploadRes.text().catch(() => '');
     const hint =
       presignData.provider === 'b2'
-        ? ' Cek izin Application Key (Read and Write), bucket Public, dan CORS Rules pada bucket Backblaze B2.'
+        ? ' Cek izin Application Key (Read and Write), nama bucket, dan CORS Rules pada bucket Backblaze B2.'
         : ' Cek apakah bucket sudah dibuat (public) dan kuota akun masih tersedia.';
     throw new Error(
       `Gagal mengunggah ke "${presignData.accountName}" (HTTP ${uploadRes.status}).${hint}${

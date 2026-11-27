@@ -20,6 +20,20 @@ function sanitizeSegment(raw: string, fallback: string, maxLen: number): string 
   return cleaned || fallback;
 }
 
+function getRequestOrigin(req: NextRequest): string {
+  const envUrl = (process.env.NEXT_PUBLIC_APP_URL || '').trim().replace(/\/+$/, '');
+  if (envUrl && /^https?:\/\//i.test(envUrl)) return envUrl;
+
+  const forwardedHost = (req.headers.get('x-forwarded-host') || '').split(',')[0]?.trim();
+  const forwardedProto =
+    (req.headers.get('x-forwarded-proto') || 'https').split(',')[0]?.trim() || 'https';
+  if (forwardedHost) {
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+
+  return req.nextUrl.origin.replace(/\/+$/, '') || 'https://orihour.vercel.app';
+}
+
 export async function POST(req: NextRequest) {
   try {
     const auth = await requireAdminSession();
@@ -61,6 +75,7 @@ export async function POST(req: NextRequest) {
     const presigned = await generatePresignedUploadForAccount({
       account: target,
       objectKey,
+      appOrigin: getRequestOrigin(req),
     });
 
     const quotaBytes = Math.max(1, Number(target.quota_mb) || 1024) * 1024 * 1024;
