@@ -9,7 +9,11 @@ import {
   INITIAL_POSTCARDS,
   INITIAL_VINYLS,
 } from '@/data/mockVinyls';
-import { extractUniqueGenres, sortPostcardsForBoard } from '@/lib/genreUtils';
+import {
+  extractUniqueGenres,
+  isSingleSongRelease,
+  sortPostcardsForBoard,
+} from '@/lib/genreUtils';
 import { computeAtmosphere } from '@/lib/timeAtmosphere';
 import { audioEngine } from '@/lib/audioEngine';
 import {
@@ -40,7 +44,7 @@ function getCurrentLocalHourDecimal(): number {
 }
 
 function resolveDefaultTrack(vinyl: VinylRecord): TrackItem | null {
-  if (vinyl.releaseType === 'Song') return null;
+  if (isSingleSongRelease(vinyl)) return null;
   const tracks = vinyl.tracks || [];
   if (tracks.length === 0) return null;
 
@@ -65,6 +69,7 @@ export default function OrihourHomePage() {
   const [curtainMounted, setCurtainMounted] = useState(true);
   const [hasEntered, setHasEntered] = useState(false);
   const [lofiMode, setLofiMode] = useState(false);
+  const [lofiSource, setLofiSource] = useState<'ENTRY' | 'ROOM'>('ENTRY');
   const [soundEnabled, setSoundEnabled] = useState(true);
 
   const [roomConfig, setRoomConfig] = useState<RoomConfig>(DEFAULT_ROOM_CONFIG);
@@ -124,7 +129,6 @@ export default function OrihourHomePage() {
     setSceneReady(true);
   }, []);
 
-  // Real staged loading bar: progresses smoothly 0% -> 48% (data) -> 90% (3D compile) -> 100% (complete)
   useEffect(() => {
     if (sceneReady) {
       setLoadProgress(100);
@@ -167,11 +171,13 @@ export default function OrihourHomePage() {
       const canvas = document.createElement('canvas');
       const gl = canvas.getContext('webgl2');
       if (!gl) {
+        setLofiSource('ENTRY');
         setLofiMode(true);
         setDataReady(true);
         setSceneReady(true);
       }
     } catch {
+      setLofiSource('ENTRY');
       setLofiMode(true);
       setDataReady(true);
       setSceneReady(true);
@@ -252,7 +258,7 @@ export default function OrihourHomePage() {
     };
   }, []);
 
-  // Catat kunjungan 1x per sesi browser ke dashboard analitik (non-blocking & tanpa simpan IP mentah)
+  // Track visit once per browser session (privacy-safe, non-blocking)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const TRACK_FLAG = 'orihour_visit_tracked_v1';
@@ -283,9 +289,7 @@ export default function OrihourHomePage() {
           viewMode: lofiModeRef.current ? 'LO-FI' : '3D',
           weather: weatherRef.current,
         }),
-      }).catch(() => {
-        // Abaikan error analitik agar tidak mengganggu pengalaman utama
-      });
+      }).catch(() => {});
     }, 1800);
 
     return () => window.clearTimeout(timer);
@@ -561,7 +565,7 @@ export default function OrihourHomePage() {
 
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(data.error || 'Gagal menyimpan kartu pos.');
+      throw new Error(data.error || 'Failed to save your postcard. Please try again.');
     }
 
     const nextCard = data.postcard as GuestbookPostcard;
@@ -588,6 +592,7 @@ export default function OrihourHomePage() {
         activeTrack={activeTrack}
         isPlaying={isPlaying}
         progressRatio={progressRatio}
+        returnTarget={lofiSource}
         onSelectAndPlay={(v, subTrack) => {
           audioEngine.unlockAndInit(soundEnabled);
           handleSelectVinyl(v, undefined, subTrack);
@@ -595,8 +600,12 @@ export default function OrihourHomePage() {
         onSeekProgress={handleSeekTurntable}
         onReturnTo3D={() => {
           setLofiMode(false);
-          if (!hasEntered) {
+          if (lofiSource === 'ENTRY') {
+            setHasEntered(false);
             setCameraFocus('ENTRY');
+          } else {
+            setHasEntered(true);
+            setCameraFocus('DESK');
           }
         }}
       />
@@ -687,8 +696,8 @@ export default function OrihourHomePage() {
           featuredArtist={activeVinyl?.artist ?? null}
           onEnterRoom={handleEnterRoom}
           onEnterLofi={() => {
+            setLofiSource('ENTRY');
             setLofiMode(true);
-            setHasEntered(true);
           }}
         />
       ) : (
@@ -744,7 +753,10 @@ export default function OrihourHomePage() {
               setCameraFocus('PINBOARD');
               setPinboardOpen(true);
             }}
-            onSwitchToLofi={() => setLofiMode(true)}
+            onSwitchToLofi={() => {
+              setLofiSource('ROOM');
+              setLofiMode(true);
+            }}
           />
 
           <LinerNotesModal

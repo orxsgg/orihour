@@ -1,116 +1,150 @@
 import { GuestbookPostcard, VinylRecord } from '@/types/orihour';
 
-const CANONICAL_ACRONYMS: Record<string, string> = {
+const ACRONYMS: Record<string, string> = {
   'r&b': 'R&B',
   rnb: 'R&B',
-  'r & b': 'R&B',
   edm: 'EDM',
   'lo-fi': 'Lo-Fi',
   lofi: 'Lo-Fi',
-  'lo fi': 'Lo-Fi',
-  'hip-hop': 'Hip-Hop',
-  hiphop: 'Hip-Hop',
-  'hip hop': 'Hip-Hop',
   'k-pop': 'K-Pop',
-  kpop: 'K-Pop',
   'j-pop': 'J-Pop',
-  jpop: 'J-Pop',
-  'c-pop': 'C-Pop',
-  'synth-pop': 'Synth-Pop',
-  synthpop: 'Synth-Pop',
-  'post-punk': 'Post-Punk',
+  'hip-hop': 'Hip-Hop',
+  'hip hop': 'Hip-Hop',
   'post-rock': 'Post-Rock',
+  'post-punk': 'Post-Punk',
+  'synth-pop': 'Synth-Pop',
+  'dream-pop': 'Dream Pop',
+  'indie-pop': 'Indie Pop',
+  'indie-rock': 'Indie Rock',
   'alt-rock': 'Alt-Rock',
   'neo-soul': 'Neo-Soul',
-  dnb: 'DnB',
-  ost: 'OST',
-  'uk garage': 'UK Garage',
-  'id indie': 'ID Indie',
 };
 
-/**
- * Normalizes any free-typed genre into a single consistent canonical label.
- * Examples:
- *  - "indie", "Indie", " INDIE  " -> "Indie"
- *  - "dream   pop", "DREAM POP"   -> "Dream Pop"
- *  - "rnb", "r&b", "R&B"          -> "R&B"
- *  - "lofi", "lo-fi"              -> "Lo-Fi"
- */
-export function normalizeGenre(raw: string, existingGenres: string[] = []): string {
-  const cleaned = raw.trim().replace(/\s+/g, ' ');
-  if (!cleaned) return 'Uncategorized';
+export function normalizeSingleGenre(raw: string): string {
+  const cleaned = (raw || '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return '';
 
   const lower = cleaned.toLowerCase();
+  if (ACRONYMS[lower]) return ACRONYMS[lower];
 
-  // 1. Exact acronym / known canonical match
-  if (CANONICAL_ACRONYMS[lower]) {
-    return CANONICAL_ACRONYMS[lower];
-  }
-
-  // 2. Match existing genre case-insensitively (keeps existing naming 100% consistent)
-  const existingMatch = existingGenres.find(
-    (g) => g.trim().replace(/\s+/g, ' ').toLowerCase() === lower
-  );
-  if (existingMatch) {
-    return existingMatch.trim().replace(/\s+/g, ' ');
-  }
-
-  // 3. Smart Title Case (handles hyphenated sub-genres like "Indie-Folk")
   return cleaned
     .split(' ')
     .map((word) => {
       const wLower = word.toLowerCase();
-      if (CANONICAL_ACRONYMS[wLower]) return CANONICAL_ACRONYMS[wLower];
+      if (ACRONYMS[wLower]) return ACRONYMS[wLower];
       return word
         .split('-')
-        .map((part) => {
-          const pLower = part.toLowerCase();
-          if (CANONICAL_ACRONYMS[pLower]) return CANONICAL_ACRONYMS[pLower];
-          if (!part) return part;
-          return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
-        })
+        .map((seg) =>
+          seg ? seg.charAt(0).toUpperCase() + seg.slice(1).toLowerCase() : ''
+        )
         .join('-');
     })
     .join(' ');
 }
 
-/**
- * Returns sorted unique canonical genre labels across all vinyl records (zero duplicates).
- */
+export function parseGenres(raw?: string | null): string[] {
+  if (!raw) return [];
+  const parts = raw
+    .split(/[,;/]+/)
+    .map((p) => normalizeSingleGenre(p))
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const p of parts) {
+    const key = p.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(p);
+    }
+  }
+  return unique;
+}
+
+export function formatGenres(list: string[]): string {
+  const seen = new Set<string>();
+  const clean: string[] = [];
+  for (const item of list) {
+    for (const token of parseGenres(item)) {
+      const key = token.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        clean.push(token);
+      }
+    }
+  }
+  return clean.join(', ');
+}
+
+export function normalizeGenre(raw: string, existingGenres?: string[]): string {
+  const parsed = parseGenres(raw);
+  if (parsed.length === 0) return 'Indie';
+
+  if (existingGenres && existingGenres.length > 0) {
+    const existingLookup = new Map<string, string>();
+    for (const g of existingGenres) {
+      const clean = g.trim();
+      if (clean && !existingLookup.has(clean.toLowerCase())) {
+        existingLookup.set(clean.toLowerCase(), clean);
+      }
+    }
+
+    return parsed
+      .map((item) => existingLookup.get(item.toLowerCase()) || item)
+      .join(', ');
+  }
+
+  return parsed.join(', ');
+}
+
 export function extractUniqueGenres(vinyls: VinylRecord[]): string[] {
   const map = new Map<string, string>();
   for (const v of vinyls) {
-    const normalized = normalizeGenre(v.genre || v.mood || '');
-    const key = normalized.toLowerCase();
-    if (!map.has(key)) {
-      map.set(key, normalized);
+    for (const g of parseGenres(v.genre || v.mood)) {
+      const key = g.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, g);
+      }
     }
   }
   return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
 }
 
-/**
- * Orders postcards for display on the 3D corkboard & Pinboard modal:
- * 1. Admin-pinned postcards stay locked at the front in their explicit `pinOrder`.
- * 2. All other visitor postcards follow strictly newest-first (pushing oldest off the 3D board).
- */
-export function sortPostcardsForBoard(postcards: GuestbookPostcard[]): GuestbookPostcard[] {
+export function vinylMatchesGenre(
+  vinyl: Pick<VinylRecord, 'genre' | 'mood'>,
+  selectedGenre: string
+): boolean {
+  const target = selectedGenre.trim().toLowerCase();
+  if (!target || target === 'all') return true;
+  const list = parseGenres(vinyl.genre || vinyl.mood);
+  return list.some((g) => g.toLowerCase() === target);
+}
+
+export function hasMultipleTracks(
+  vinyl: Pick<VinylRecord, 'releaseType' | 'tracks'>
+): boolean {
+  if (vinyl.releaseType === 'Song') return false;
+  return Array.isArray(vinyl.tracks) && vinyl.tracks.length > 1;
+}
+
+export function isSingleSongRelease(
+  vinyl: Pick<VinylRecord, 'releaseType' | 'tracks'>
+): boolean {
+  if (vinyl.releaseType === 'Song') return true;
+  if (vinyl.releaseType === 'Live Version' || vinyl.releaseType === 'Cover') {
+    return !hasMultipleTracks(vinyl);
+  }
+  return false;
+}
+
+export function sortPostcardsForBoard(
+  postcards: GuestbookPostcard[]
+): GuestbookPostcard[] {
   return [...postcards].sort((a, b) => {
-    const aPinned = Boolean(a.isPinned);
-    const bPinned = Boolean(b.isPinned);
-
-    if (aPinned && bPinned) {
-      const orderA = a.pinOrder ?? 9999;
-      const orderB = b.pinOrder ?? 9999;
-      if (orderA !== orderB) return orderA - orderB;
-    } else if (aPinned !== bPinned) {
-      return aPinned ? -1 : 1;
-    }
-
-    const timeA = a.createdAt ? Date.parse(a.createdAt) : 0;
-    const timeB = b.createdAt ? Date.parse(b.createdAt) : 0;
-    if (timeA !== timeB) return timeB - timeA;
-
-    return b.id.localeCompare(a.id);
+    const pinDiff = Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned));
+    if (pinDiff !== 0) return pinDiff;
+    const tA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const tB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return tB - tA;
   });
 }

@@ -1,88 +1,160 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { normalizeGenre } from '@/lib/genreUtils';
-import {
-  checkRateLimit,
-  getClientIp,
-  isValidRecordId,
-  sanitizePlainText,
-  sanitizeSafeUrl,
-} from '@/lib/security';
+import crypto from 'crypto';
+import { cookies } from 'next/headers';
+import { createServerClient } from '@supabase/ssr';
+import { createClient } from '@supabase/supabase-js';
+import { formatGenres, parseGenres } from '@/lib/genreUtils';
 import {
   mapVinylRow,
   sanitizeClipMode,
   sanitizeReleaseType,
-  sanitizeTracksArray,
-  VinylRecordRow,
 } from '@/lib/supabase/mappers';
-import { requireAdminUser } from '@/lib/supabase/server';
+import { TrackItem } from '@/types/orihour';
 
 export const dynamic = 'force-dynamic';
 
-async function getExistingGenres(
-  supabase: NonNullable<Awaited<ReturnType<typeof requireAdminUser>>['supabase']>
-): Promise<string[]> {
-  const [gRes, vRes] = await Promise.all([
-    supabase.from('genres').select('name'),
-    supabase.from('vinyl_records').select('genre'),
-  ]);
-  const names: string[] = [];
-  if (!gRes.error && gRes.data) {
-    gRes.data.forEach((r) => r.name && names.push(String(r.name)));
-  }
-  if (!vRes.error && vRes.data) {
-    vRes.data.forEach((r) => r.genre && names.push(String(r.genre)));
-  }
-  return names;
+function asOptionalString(val: unknown): string | undefined {
+  return typeof val === 'string' ? val : undefined;
 }
 
-async function ensureGenreInTable(
-  supabase: NonNullable<Awaited<ReturnType<typeof requireAdminUser>>['supabase']>,
-  canonicalGenre: string
-) {
-  try {
-    await supabase.from('genres').upsert({ name: canonicalGenre }, { onConflict: 'name' });
-  } catch {
-    // Ignore if genres table has not been migrated yet
-  }
+function cleanText(val: unknown, maxLen: number): string {
+  if (typeof val !== 'string') return '';
+  return val
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .trim()
+    .slice(0, maxLen);
 }
 
-export async function GET() {
-  const { supabase, user, error } = await requireAdminUser();
-  if (error || !supabase || !user) {
-    return NextResponse.json({ error: error || 'Unauthorized' }, { status: 401 });
+function cleanOptionalUrl(val: unknown): string | null {
+  if (typeof val !== 'string') return null;
+  const trimmed = val.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('/')) {
+    return trimmed.slice(0, 1200);
+  }
+  return null;
+}
+
+function sanitizeTracks(raw: unknown): TrackItem[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TrackItem[] = [];
+  for (let i = 0; i < Math.min(raw.length, 60); i++) {
+    const item = raw[i] as Record<string, unknown>;
+    if (!item || typeof item !== 'object') continue;
+    const title = cleanText(item.title, 160);
+    if (!title) continue;
+    const clipStart = Math.max(0, Math.round(Number(item.clipStartSec) || 0));
+    const clipEnd = Math.max(clipStart + 5, Math.round(Number(item.clipEndSec) || 30));
+    out.push({
+      id: cleanText(item.id, 64) || `trk-${Date.now()}-${i}`,
+      title,
+      duration: cleanText(item.duration, 16) || '03:30',
+      audioUrl: cleanOptionalUrl(item.audioUrl) || undefined,
+      clipMode: sanitizeClipMode(asOptionalString(item.clipMode)),
+      clipStartSec: clipStart,
+      clipEndSec: clipEnd,
+    });
+  }
+  return out;
+}
+
+function slugifyGenre(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'genre'
+  );
+}
+
+async function getAuthorizedSupabaseClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+
+  if (!url || !anonKey) {
+    return {
+      error: 'Supabase belum dikonfigurasi.',
+      status: 500 as const,
+      supabase: null,
+    };
   }
 
-  const { data, error: dbErr } = await supabase
-    .from('vinyl_records')
-    .select('*')
-    .order('rack_slot', { ascending: true, nullsFirst: false })
-    .order('created_at', { ascending: false });
-
-  if (dbErr) {
-    return NextResponse.json({ error: dbErr.message }, { status: 500 });
-  }
-
-  return NextResponse.json({
-    vinyls: (data as VinylRecordRow[]).map(mapVinylRow),
+  const cookieStore = await cookies();
+  const sessionClient = createServerClient(url, anonKey, {
+    cookies: {
+      getAll() {
+        return cookieStore.getAll();
+      },
+      setAll(cookiesToSet) {
+        try {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            cookieStore.set(name, value, options);
+          });
+        } catch {
+          // Ignore write in read-only contexts
+        }
+      },
+    },
   });
+
+  const {
+    data: { user },
+  } = await sessionClient.auth.getUser();
+
+  if (!user) {
+    return {
+      error: 'Unauthorized. Silakan login sebagai admin.',
+      status: 401 as const,
+      supabase: null,
+    };
+  }
+
+  if (adminEmail && (user.email || '').toLowerCase() !== adminEmail) {
+    return {
+      error: 'Forbidden. Akun tidak memiliki akses admin.',
+      status: 403 as const,
+      supabase: null,
+    };
+  }
+
+  const dbClient = serviceKey
+    ? createClient(url, serviceKey, { auth: { persistSession: false } })
+    : sessionClient;
+
+  return { error: null, status: 200 as const, supabase: dbClient };
+}
+
+async function ensureIndividualGenresExist(
+  supabase: ReturnType<typeof createClient> | ReturnType<typeof createServerClient>,
+  genreList: string[]
+) {
+  for (const name of genreList) {
+    const slug = slugifyGenre(name);
+    try {
+      await supabase
+        .from('genres')
+        .upsert({ name, slug }, { onConflict: 'slug', ignoreDuplicates: true });
+    } catch {
+      // Abaikan jika sudah terdaftar dengan nama/slug serupa
+    }
+  }
 }
 
 export async function POST(req: NextRequest) {
-  const ip = getClientIp(req);
-  const rate = checkRateLimit(`admin-vinyls:${ip}`, 60, 60 * 1000);
-  if (!rate.allowed) {
-    return NextResponse.json({ error: 'Terlalu banyak permintaan.' }, { status: 429 });
-  }
-
-  const { supabase, user, error } = await requireAdminUser();
-  if (error || !supabase || !user) {
-    return NextResponse.json({ error: error || 'Unauthorized' }, { status: 401 });
-  }
-
   try {
-    const body = await req.json();
-    const title = sanitizePlainText(body?.title, 100);
-    const artist = sanitizePlainText(body?.artist, 100);
+    const auth = await getAuthorizedSupabaseClient();
+    if (!auth.supabase) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status });
+    }
+    const supabase = auth.supabase;
+
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    const title = cleanText(body.title, 160);
+    const artist = cleanText(body.artist, 160);
+
     if (!title || !artist) {
       return NextResponse.json(
         { error: 'Judul dan nama penyanyi wajib diisi.' },
@@ -90,265 +162,254 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const releaseType = sanitizeReleaseType(body?.releaseType);
-    const existingGenres = await getExistingGenres(supabase);
-    const canonicalGenre = normalizeGenre(
-      sanitizePlainText(body?.genre, 40) || 'Indie',
-      existingGenres
+    const releaseType = sanitizeReleaseType(asOptionalString(body.releaseType));
+    const tracks = sanitizeTracks(body.tracks);
+    const parsedGenres = parseGenres(
+      typeof body.genre === 'string'
+        ? body.genre
+        : typeof body.mood === 'string'
+        ? body.mood
+        : 'Indie'
     );
-    await ensureGenreInTable(supabase, canonicalGenre);
+    const finalGenres = parsedGenres.length > 0 ? parsedGenres : ['Indie'];
+    const genreString = formatGenres(finalGenres);
 
-    const parsedSlot =
-      typeof body?.rackSlot === 'number' && body.rackSlot >= 1 && body.rackSlot <= 6
-        ? Math.round(body.rackSlot)
+    await ensureIndividualGenresExist(supabase, finalGenres);
+
+    const rawRack = body.rackSlot;
+    const rackSlot =
+      typeof rawRack === 'number' &&
+      Number.isInteger(rawRack) &&
+      rawRack >= 1 &&
+      rawRack <= 6
+        ? rawRack
         : null;
 
-    if (parsedSlot !== null) {
+    if (rackSlot !== null) {
       await supabase
         .from('vinyl_records')
         .update({ rack_slot: null })
-        .eq('rack_slot', parsedSlot);
+        .eq('rack_slot', rackSlot);
     }
 
-    const clipMode = sanitizeClipMode(body?.clipMode);
-    const clipStart = Math.max(0, Math.round(Number(body?.clipStartSec) || 0));
-    const clipEnd = Math.max(
-      clipStart + 3,
-      Math.round(Number(body?.clipEndSec) || clipStart + 30)
+    const clipStart = Math.max(0, Math.round(Number(body.clipStartSec) || 0));
+    const clipEnd = Math.max(clipStart + 5, Math.round(Number(body.clipEndSec) || 30));
+    const releaseYear = Math.min(
+      2100,
+      Math.max(1900, Math.round(Number(body.releaseYear) || new Date().getFullYear()))
     );
 
-    const tracks = releaseType === 'Song' ? [] : sanitizeTracksArray(body?.tracks);
+    const newId = `vnl-${crypto.randomUUID().replace(/-/g, '').slice(0, 10)}`;
 
-    const { data, error: insertErr } = await supabase
+    const insertRow = {
+      id: newId,
+      title,
+      artist,
+      album: cleanText(body.album, 160),
+      release_type: releaseType,
+      release_year: releaseYear,
+      duration: cleanText(body.duration, 16) || '03:30',
+      genre: genreString,
+      mood: genreString,
+      label_color: cleanText(body.labelColor, 20) || '#4A2E1B',
+      art_style: Math.max(0, Math.round(Number(body.artStyle) || 0)),
+      cover_url: cleanOptionalUrl(body.coverUrl),
+      show_cover_overlay: body.showCoverOverlay !== false,
+      audio_url: cleanOptionalUrl(body.audioUrl),
+      clip_mode: sanitizeClipMode(asOptionalString(body.clipMode)),
+      clip_start_sec: clipStart,
+      clip_end_sec: clipEnd,
+      favorite_lyric: cleanText(body.favoriteLyric, 500),
+      favorite_song: cleanText(body.favoriteSong, 160) || null,
+      tracks,
+      liner_notes: cleanText(body.linerNotes, 2500),
+      rack_slot: rackSlot,
+    };
+
+    const { data, error } = await supabase
       .from('vinyl_records')
-      .insert({
-        title,
-        artist,
-        album: sanitizePlainText(body?.album, 100),
-        release_type: releaseType,
-        release_year: Math.max(
-          1900,
-          Math.min(2100, Number(body?.releaseYear) || new Date().getFullYear())
-        ),
-        duration: sanitizePlainText(body?.duration, 12) || '03:30',
-        genre: canonicalGenre,
-        label_color: /^#[0-9a-fA-F]{6}$/.test(String(body?.labelColor || ''))
-          ? String(body.labelColor)
-          : '#4A2E1B',
-        art_style: Number(body?.artStyle) || 0,
-        cover_url: sanitizeSafeUrl(body?.coverUrl) || null,
-        show_cover_overlay: body?.showCoverOverlay !== false,
-        audio_url: sanitizeSafeUrl(body?.audioUrl) || null,
-        clip_mode: clipMode,
-        clip_start_sec: clipStart,
-        clip_end_sec: clipEnd,
-        favorite_lyric: sanitizePlainText(body?.favoriteLyric, 280),
-        favorite_song: sanitizePlainText(body?.favoriteSong, 120),
-        tracks,
-        liner_notes: sanitizePlainText(body?.linerNotes, 1200),
-        rack_slot: parsedSlot,
-      })
+      .insert(insertRow)
       .select('*')
       .single();
 
-    if (insertErr) {
-      return NextResponse.json({ error: insertErr.message }, { status: 500 });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ vinyl: mapVinylRow(data as VinylRecordRow) });
+    return NextResponse.json({ vinyl: mapVinylRow(data) }, { status: 201 });
   } catch (err) {
-    console.error('[POST /api/admin/vinyls]', err);
-    return NextResponse.json({ error: 'Payload tidak valid.' }, { status: 400 });
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Gagal menambah koleksi vinyl.' },
+      { status: 500 }
+    );
   }
 }
 
 export async function PATCH(req: NextRequest) {
-  const ip = getClientIp(req);
-  const rate = checkRateLimit(`admin-vinyls:${ip}`, 60, 60 * 1000);
-  if (!rate.allowed) {
-    return NextResponse.json({ error: 'Terlalu banyak permintaan.' }, { status: 429 });
-  }
-
-  const { supabase, user, error } = await requireAdminUser();
-  if (error || !supabase || !user) {
-    return NextResponse.json({ error: error || 'Unauthorized' }, { status: 401 });
-  }
-
   try {
-    const body = await req.json();
-
-    // Bulk reorder 6-slot 3D wooden rack container (drag-and-drop)
-    if (body?.action === 'reorder_rack' && Array.isArray(body?.rackIds)) {
-      const rackIds = (body.rackIds as (string | null)[]).slice(0, 6);
-
-      const { error: clearErr } = await supabase
-        .from('vinyl_records')
-        .update({ rack_slot: null, updated_at: new Date().toISOString() })
-        .not('rack_slot', 'is', null);
-
-      if (clearErr) {
-        return NextResponse.json({ error: clearErr.message }, { status: 500 });
-      }
-
-      const { data: settings } = await supabase
-        .from('room_settings')
-        .select('active_turntable_vinyl_id')
-        .eq('id', 1)
-        .maybeSingle();
-      const activeId = settings?.active_turntable_vinyl_id ?? null;
-
-      const assignedIds = new Set<string>();
-      for (let idx = 0; idx < rackIds.length; idx++) {
-        const id = rackIds[idx];
-        if (!id || !isValidRecordId(id) || id === activeId || assignedIds.has(id)) continue;
-        assignedIds.add(id);
-        await supabase
-          .from('vinyl_records')
-          .update({ rack_slot: idx + 1, updated_at: new Date().toISOString() })
-          .eq('id', id);
-      }
-
-      const { data: updated } = await supabase
-        .from('vinyl_records')
-        .select('*')
-        .order('rack_slot', { ascending: true, nullsFirst: false })
-        .order('created_at', { ascending: false });
-
-      return NextResponse.json({
-        vinyls: ((updated as VinylRecordRow[]) || []).map(mapVinylRow),
-      });
+    const auth = await getAuthorizedSupabaseClient();
+    if (!auth.supabase) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status });
     }
+    const supabase = auth.supabase;
 
-    const id = String(body?.id || '').trim();
-    if (!id || !isValidRecordId(id)) {
+    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    const id = cleanText(body.id, 80);
+    if (!id) {
       return NextResponse.json({ error: 'ID vinyl tidak valid.' }, { status: 400 });
     }
 
-    const updates: Record<string, unknown> = {
-      updated_at: new Date().toISOString(),
-    };
+    const patch: Record<string, unknown> = {};
 
-    if (typeof body.title === 'string') updates.title = sanitizePlainText(body.title, 100);
-    if (typeof body.artist === 'string') updates.artist = sanitizePlainText(body.artist, 100);
-    if (typeof body.album === 'string') updates.album = sanitizePlainText(body.album, 100);
-    if (typeof body.releaseType === 'string') {
-      updates.release_type = sanitizeReleaseType(body.releaseType);
+    if ('title' in body) {
+      const title = cleanText(body.title, 160);
+      if (!title) {
+        return NextResponse.json({ error: 'Judul tidak boleh kosong.' }, { status: 400 });
+      }
+      patch.title = title;
     }
-    if (body.releaseYear !== undefined) {
-      updates.release_year = Math.max(
-        1900,
-        Math.min(2100, Number(body.releaseYear) || new Date().getFullYear())
+
+    if ('artist' in body) {
+      const artist = cleanText(body.artist, 160);
+      if (!artist) {
+        return NextResponse.json({ error: 'Penyanyi tidak boleh kosong.' }, { status: 400 });
+      }
+      patch.artist = artist;
+    }
+
+    if ('album' in body) patch.album = cleanText(body.album, 160);
+    if ('releaseType' in body) {
+      patch.release_type = sanitizeReleaseType(asOptionalString(body.releaseType));
+    }
+    if ('releaseYear' in body) {
+      patch.release_year = Math.min(
+        2100,
+        Math.max(1900, Math.round(Number(body.releaseYear) || new Date().getFullYear()))
       );
     }
-    if (typeof body.duration === 'string') {
-      updates.duration = sanitizePlainText(body.duration, 12) || '03:30';
+    if ('duration' in body) patch.duration = cleanText(body.duration, 16) || '03:30';
+
+    if ('genre' in body || 'mood' in body) {
+      const rawGenre =
+        typeof body.genre === 'string'
+          ? body.genre
+          : typeof body.mood === 'string'
+          ? body.mood
+          : 'Indie';
+      const parsedGenres = parseGenres(rawGenre);
+      const finalGenres = parsedGenres.length > 0 ? parsedGenres : ['Indie'];
+      const genreString = formatGenres(finalGenres);
+      patch.genre = genreString;
+      patch.mood = genreString;
+      await ensureIndividualGenresExist(supabase, finalGenres);
     }
-    if (typeof body.genre === 'string') {
-      const existingGenres = await getExistingGenres(supabase);
-      const canonical = normalizeGenre(sanitizePlainText(body.genre, 40), existingGenres);
-      await ensureGenreInTable(supabase, canonical);
-      updates.genre = canonical;
+
+    if ('labelColor' in body) {
+      patch.label_color = cleanText(body.labelColor, 20) || '#4A2E1B';
     }
-    if (typeof body.labelColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.labelColor)) {
-      updates.label_color = body.labelColor;
+    if ('artStyle' in body) {
+      patch.art_style = Math.max(0, Math.round(Number(body.artStyle) || 0));
     }
-    if (body.artStyle !== undefined) updates.art_style = Number(body.artStyle) || 0;
-    if (body.coverUrl !== undefined) {
-      updates.cover_url = sanitizeSafeUrl(body.coverUrl) || null;
+    if ('coverUrl' in body) patch.cover_url = cleanOptionalUrl(body.coverUrl);
+    if ('showCoverOverlay' in body) {
+      patch.show_cover_overlay = body.showCoverOverlay !== false;
     }
-    if (typeof body.showCoverOverlay === 'boolean') {
-      updates.show_cover_overlay = body.showCoverOverlay;
+    if ('audioUrl' in body) patch.audio_url = cleanOptionalUrl(body.audioUrl);
+    if ('clipMode' in body) {
+      patch.clip_mode = sanitizeClipMode(asOptionalString(body.clipMode));
     }
-    if (body.audioUrl !== undefined) {
-      updates.audio_url = sanitizeSafeUrl(body.audioUrl) || null;
+
+    if ('clipStartSec' in body || 'clipEndSec' in body) {
+      const startSec = Math.max(0, Math.round(Number(body.clipStartSec) || 0));
+      const endSec = Math.max(startSec + 5, Math.round(Number(body.clipEndSec) || 30));
+      patch.clip_start_sec = startSec;
+      patch.clip_end_sec = endSec;
     }
-    if (typeof body.clipMode === 'string') {
-      updates.clip_mode = sanitizeClipMode(body.clipMode);
+
+    if ('favoriteLyric' in body) patch.favorite_lyric = cleanText(body.favoriteLyric, 500);
+    if ('favoriteSong' in body) {
+      const fav = cleanText(body.favoriteSong, 160);
+      patch.favorite_song = fav || null;
     }
-    if (body.clipStartSec !== undefined) {
-      updates.clip_start_sec = Math.max(0, Math.round(Number(body.clipStartSec) || 0));
-    }
-    if (body.clipEndSec !== undefined) {
-      const baseStart =
-        typeof updates.clip_start_sec === 'number' ? updates.clip_start_sec : 0;
-      updates.clip_end_sec = Math.max(
-        baseStart + 3,
-        Math.round(Number(body.clipEndSec) || baseStart + 30)
-      );
-    }
-    if (typeof body.favoriteLyric === 'string') {
-      updates.favorite_lyric = sanitizePlainText(body.favoriteLyric, 280);
-    }
-    if (typeof body.favoriteSong === 'string') {
-      updates.favorite_song = sanitizePlainText(body.favoriteSong, 120);
-    }
-    if (Array.isArray(body.tracks)) {
-      updates.tracks =
-        updates.release_type === 'Song' ? [] : sanitizeTracksArray(body.tracks);
-    }
-    if (typeof body.linerNotes === 'string') {
-      updates.liner_notes = sanitizePlainText(body.linerNotes, 1200);
-    }
-    if (body.rackSlot !== undefined) {
-      const slot =
-        typeof body.rackSlot === 'number' && body.rackSlot >= 1 && body.rackSlot <= 6
-          ? Math.round(body.rackSlot)
+    if ('tracks' in body) patch.tracks = sanitizeTracks(body.tracks);
+    if ('linerNotes' in body) patch.liner_notes = cleanText(body.linerNotes, 2500);
+
+    if ('rackSlot' in body) {
+      const rawRack = body.rackSlot;
+      const rackSlot =
+        typeof rawRack === 'number' &&
+        Number.isInteger(rawRack) &&
+        rawRack >= 1 &&
+        rawRack <= 6
+          ? rawRack
           : null;
-      if (slot !== null) {
+
+      if (rackSlot !== null) {
         await supabase
           .from('vinyl_records')
           .update({ rack_slot: null })
-          .eq('rack_slot', slot)
+          .eq('rack_slot', rackSlot)
           .neq('id', id);
       }
-      updates.rack_slot = slot;
+      patch.rack_slot = rackSlot;
     }
 
-    const { data, error: updErr } = await supabase
+    if (Object.keys(patch).length === 0) {
+      return NextResponse.json({ error: 'Tidak ada perubahan untuk disimpan.' }, { status: 400 });
+    }
+
+    const { data, error } = await supabase
       .from('vinyl_records')
-      .update(updates)
+      .update(patch)
       .eq('id', id)
       .select('*')
       .single();
 
-    if (updErr) {
-      return NextResponse.json({ error: updErr.message }, { status: 500 });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ vinyl: mapVinylRow(data as VinylRecordRow) });
+    return NextResponse.json({ vinyl: mapVinylRow(data) });
   } catch (err) {
-    console.error('[PATCH /api/admin/vinyls]', err);
-    return NextResponse.json({ error: 'Payload tidak valid.' }, { status: 400 });
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Gagal memperbarui koleksi vinyl.' },
+      { status: 500 }
+    );
   }
 }
 
 export async function DELETE(req: NextRequest) {
-  const ip = getClientIp(req);
-  const rate = checkRateLimit(`admin-vinyls:${ip}`, 40, 60 * 1000);
-  if (!rate.allowed) {
-    return NextResponse.json({ error: 'Terlalu banyak permintaan.' }, { status: 429 });
+  try {
+    const auth = await getAuthorizedSupabaseClient();
+    if (!auth.supabase) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status });
+    }
+    const supabase = auth.supabase;
+
+    const id = cleanText(req.nextUrl.searchParams.get('id'), 80);
+    if (!id) {
+      return NextResponse.json({ error: 'ID vinyl tidak valid.' }, { status: 400 });
+    }
+
+    try {
+      await supabase
+        .from('room_settings')
+        .update({ active_turntable_vinyl_id: null })
+        .eq('active_turntable_vinyl_id', id);
+    } catch {
+      // Abaikan jika pengaturan turntable sudah kosong
+    }
+
+    const { error } = await supabase.from('vinyl_records').delete().eq('id', id);
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ ok: true, id });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Gagal menghapus vinyl.' },
+      { status: 500 }
+    );
   }
-
-  const { supabase, user, error } = await requireAdminUser();
-  if (error || !supabase || !user) {
-    return NextResponse.json({ error: error || 'Unauthorized' }, { status: 401 });
-  }
-
-  const id = req.nextUrl.searchParams.get('id')?.trim() || '';
-  if (!id || !isValidRecordId(id)) {
-    return NextResponse.json({ error: 'ID vinyl tidak valid.' }, { status: 400 });
-  }
-
-  await supabase
-    .from('room_settings')
-    .update({ active_turntable_vinyl_id: null, updated_at: new Date().toISOString() })
-    .eq('id', 1)
-    .eq('active_turntable_vinyl_id', id);
-
-  const { error: delErr } = await supabase.from('vinyl_records').delete().eq('id', id);
-  if (delErr) {
-    return NextResponse.json({ error: delErr.message }, { status: 500 });
-  }
-
-  return NextResponse.json({ deletedId: id });
 }

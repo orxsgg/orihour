@@ -7,11 +7,14 @@ import {
   Edit3,
   Trash2,
   Upload,
+  FolderUp,
+  FileArchive,
   Music2,
   Disc3,
   Save,
   X,
   Tag,
+  Check,
   CheckCircle2,
   AlertTriangle,
   Image as ImageIcon,
@@ -21,6 +24,7 @@ import {
   Star,
   CheckSquare,
   Square,
+  Loader2,
 } from 'lucide-react';
 import {
   ClipMode,
@@ -31,6 +35,12 @@ import {
   VinylRecord,
 } from '@/types/orihour';
 import { extractAudioDurationSeconds, formatDurationSeconds } from '@/lib/audioEngine';
+import { collectAudioFilesFromSelection } from '@/lib/audioArchiveExtractor';
+import {
+  formatGenres,
+  hasMultipleTracks,
+  parseGenres,
+} from '@/lib/genreUtils';
 import { ProcessedImageResult } from '@/lib/imageProcessor';
 import { uploadMediaToSupabase } from '@/lib/supabase/storage';
 import { getSleeveDataUrl } from '@/components/room-3d/textures';
@@ -85,9 +95,10 @@ interface VinylFormState {
   artist: string;
   album: string;
   releaseType: ReleaseType;
+  singleOrMulti: 'single' | 'multi';
   releaseYear: number;
   duration: string;
-  genre: string;
+  selectedGenres: string[];
   labelColor: string;
   artStyle: number;
   coverUrl: string;
@@ -103,15 +114,21 @@ interface VinylFormState {
   rackSlot: number | null;
 }
 
+function isFlexibleReleaseType(rt: ReleaseType): boolean {
+  return rt === 'Live Version' || rt === 'Cover';
+}
+
 function createEmptyForm(defaultGenre: string): VinylFormState {
+  const initialGenres = parseGenres(defaultGenre);
   return {
     title: '',
     artist: '',
     album: '',
     releaseType: 'Song',
+    singleOrMulti: 'single',
     releaseYear: new Date().getFullYear(),
     duration: '03:30',
-    genre: defaultGenre || 'Indie',
+    selectedGenres: initialGenres.length > 0 ? initialGenres : ['Indie'],
     labelColor: '#4A2E1B',
     artStyle: 0,
     coverUrl: '',
@@ -135,6 +152,29 @@ function formatSecLabel(sec: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function parseDurationToSeconds(label: string): number {
+  const parts = (label || '')
+    .trim()
+    .split(':')
+    .map((n) => parseInt(n, 10));
+  if (parts.some((n) => Number.isNaN(n))) return 0;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return 0;
+}
+
+function formatTotalDuration(totalSec: number): string {
+  const safe = Math.max(0, Math.round(totalSec));
+  if (safe === 0) return '00:00';
+  const h = Math.floor(safe / 3600);
+  const m = Math.floor((safe % 3600) / 60);
+  const s = safe % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 export default function VinylLibraryTab({
   vinyls,
   genres,
@@ -153,6 +193,11 @@ export default function VinylLibraryTab({
   const [uploadingCover, setUploadingCover] = useState(false);
   const [uploadingAudio, setUploadingAudio] = useState(false);
   const [uploadingTrackId, setUploadingTrackId] = useState<string | null>(null);
+  const [batchUploadProgress, setBatchUploadProgress] = useState<{
+    done: number;
+    total: number;
+    currentName: string;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -160,7 +205,6 @@ export default function VinylLibraryTab({
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
 
-  // Bulk-selection states for vinyls, genres, and tracklist rows
   const [selectedVinylIds, setSelectedVinylIds] = useState<Set<string>>(new Set());
   const [bulkDeletingVinyls, setBulkDeletingVinyls] = useState(false);
   const [selectedGenreIds, setSelectedGenreIds] = useState<Set<string>>(new Set());
@@ -168,6 +212,7 @@ export default function VinylLibraryTab({
 
   const [showGenreManager, setShowGenreManager] = useState(false);
   const [newGenreName, setNewGenreName] = useState('');
+  const [inlineGenreInput, setInlineGenreInput] = useState('');
   const [genreBusy, setGenreBusy] = useState(false);
 
   const [confirmState, setConfirmState] = useState<{
@@ -179,6 +224,8 @@ export default function VinylLibraryTab({
 
   const coverInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
+  const zipOrMultiInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const trackAudioRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   useEffect(() => {
@@ -188,6 +235,7 @@ export default function VinylLibraryTab({
   useEffect(() => {
     if (!editing) {
       setSelectedTrackIds(new Set());
+      setInlineGenreInput('');
       return;
     }
     const prev = document.body.style.overflow;
@@ -197,37 +245,52 @@ export default function VinylLibraryTab({
     };
   }, [editing]);
 
+  // Attach non-standard webkitdirectory attribute safely for folder uploads
+  const bindFolderInputRef = (el: HTMLInputElement | null) => {
+    folderInputRef.current = el;
+    if (el) {
+      el.setAttribute('webkitdirectory', '');
+      el.setAttribute('directory', '');
+    }
+  };
+
   const showError = (msg: string) => {
     setErrorMsg(msg);
-    setTimeout(() => setErrorMsg(null), 4500);
+    setTimeout(() => setErrorMsg(null), 5000);
   };
 
   const genreNames = useMemo(() => {
-    const set = new Set<string>(genres.map((g) => g.name));
-    vinyls.forEach((v) => {
-      if (v.genre) set.add(v.genre);
+    const map = new Map<string, string>();
+    genres.forEach((g) => {
+      parseGenres(g.name).forEach((name) => {
+        const key = name.toLowerCase();
+        if (!map.has(key)) map.set(key, name);
+      });
     });
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [genres, vinyls]);
-
-  const genreDropdownOptions = useMemo<DropdownOption[]>(() => {
-    const list = new Set<string>(genreNames);
-    if (editing?.genre) list.add(editing.genre);
-    return Array.from(list)
-      .sort((a, b) => a.localeCompare(b))
-      .map((name) => ({ value: name, label: name }));
-  }, [genreNames, editing?.genre]);
+    vinyls.forEach((v) => {
+      parseGenres(v.genre || v.mood).forEach((name) => {
+        const key = name.toLowerCase();
+        if (!map.has(key)) map.set(key, name);
+      });
+    });
+    editing?.selectedGenres.forEach((name) => {
+      const key = name.toLowerCase();
+      if (!map.has(key)) map.set(key, name);
+    });
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
+  }, [genres, vinyls, editing?.selectedGenres]);
 
   const filteredVinyls = useMemo(() => {
     const q = search.trim().toLowerCase();
     return vinyls.filter((v) => {
       const matchType = typeFilter === 'ALL' || v.releaseType === typeFilter;
+      const gList = parseGenres(v.genre || v.mood);
       const matchQuery =
         !q ||
         v.title.toLowerCase().includes(q) ||
         v.artist.toLowerCase().includes(q) ||
-        v.genre.toLowerCase().includes(q) ||
-        v.album.toLowerCase().includes(q);
+        v.album.toLowerCase().includes(q) ||
+        gList.some((g) => g.toLowerCase().includes(q));
       return matchType && matchQuery;
     });
   }, [vinyls, search, typeFilter]);
@@ -320,7 +383,7 @@ export default function VinylLibraryTab({
 
     setConfirmState({
       title: `Hapus ${ids.length} Genre Terpilih?`,
-      description: `Sebanyak ${ids.length} genre terpilih akan dihapus dari daftar pilihan dropdown.`,
+      description: `Sebanyak ${ids.length} genre terpilih akan dihapus dari daftar pilihan genre.`,
       confirmLabel: `Hapus (${ids.length})`,
       onConfirm: async () => {
         setGenreBusy(true);
@@ -333,7 +396,7 @@ export default function VinylLibraryTab({
             }
           }
           setSelectedGenreIds(new Set());
-          setStatusMsg(`${ids.length} genre berhasil dihapus dari pilihan dropdown.`);
+          setStatusMsg(`${ids.length} genre berhasil dihapus.`);
         } catch (err) {
           showError(err instanceof Error ? err.message : 'Gagal menghapus genre terpilih.');
         } finally {
@@ -346,15 +409,29 @@ export default function VinylLibraryTab({
 
   const openEdit = (v: VinylRecord) => {
     setSelectedTrackIds(new Set());
+    const rt = v.releaseType || 'Song';
+    const multi = hasMultipleTracks(v);
+    const singleOrMulti: 'single' | 'multi' =
+      rt === 'Song'
+        ? 'single'
+        : isFlexibleReleaseType(rt)
+        ? multi
+          ? 'multi'
+          : 'single'
+        : 'multi';
+
+    const parsedGenres = parseGenres(v.genre || v.mood);
+
     setEditing({
       id: v.id,
       title: v.title,
       artist: v.artist,
       album: v.album,
-      releaseType: v.releaseType || 'Song',
+      releaseType: rt,
+      singleOrMulti,
       releaseYear: v.releaseYear,
       duration: v.duration,
-      genre: v.genre || v.mood || genreNames[0] || 'Indie',
+      selectedGenres: parsedGenres.length > 0 ? parsedGenres : [genreNames[0] || 'Indie'],
       labelColor: v.labelColor || '#4A2E1B',
       artStyle: v.artStyle || 0,
       coverUrl: v.coverUrl || '',
@@ -369,6 +446,69 @@ export default function VinylLibraryTab({
       linerNotes: v.linerNotes || '',
       rackSlot: v.rackSlot ?? null,
     });
+  };
+
+  const handleReleaseTypeChange = (nextType: ReleaseType) => {
+    setEditing((prev) => {
+      if (!prev) return prev;
+      let nextMode: 'single' | 'multi' = prev.singleOrMulti;
+      if (nextType === 'Song') {
+        nextMode = 'single';
+      } else if (isFlexibleReleaseType(nextType)) {
+        nextMode = prev.tracks.length > 1 ? 'multi' : 'single';
+      } else {
+        nextMode = 'multi';
+      }
+      return {
+        ...prev,
+        releaseType: nextType,
+        singleOrMulti: nextMode,
+      };
+    });
+  };
+
+  const toggleEditingGenre = (genreName: string) => {
+    setEditing((prev) => {
+      if (!prev) return prev;
+      const exists = prev.selectedGenres.some(
+        (g) => g.toLowerCase() === genreName.toLowerCase()
+      );
+      if (exists) {
+        return {
+          ...prev,
+          selectedGenres: prev.selectedGenres.filter(
+            (g) => g.toLowerCase() !== genreName.toLowerCase()
+          ),
+        };
+      }
+      return {
+        ...prev,
+        selectedGenres: [...prev.selectedGenres, genreName],
+      };
+    });
+  };
+
+  const handleAddInlineGenre = async () => {
+    const trimmed = inlineGenreInput.trim();
+    if (!trimmed || !editing) return;
+    setGenreBusy(true);
+    try {
+      const canonical = await onAddGenre(trimmed);
+      setInlineGenreInput('');
+      setEditing((prev) => {
+        if (!prev) return prev;
+        const already = prev.selectedGenres.some(
+          (g) => g.toLowerCase() === canonical.toLowerCase()
+        );
+        return already
+          ? prev
+          : { ...prev, selectedGenres: [...prev.selectedGenres, canonical] };
+      });
+    } catch (err) {
+      showError(err instanceof Error ? err.message : 'Gagal menambah genre.');
+    } finally {
+      setGenreBusy(false);
+    }
   };
 
   const handleConfirmCrop = async (result: ProcessedImageResult) => {
@@ -431,6 +571,99 @@ export default function VinylLibraryTab({
       showError(err instanceof Error ? err.message : 'Gagal upload audio MP3.');
     } finally {
       setUploadingAudio(false);
+    }
+  };
+
+  // Batch Upload ZIP / Folder / Multiple Audio Files -> Auto Track Title, Duration & Storage Upload
+  const handleBatchAudioSelection = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !editing) return;
+    const fileArray = Array.from(files);
+    e.target.value = '';
+
+    setBatchUploadProgress({
+      done: 0,
+      total: fileArray.length,
+      currentName: 'Mengekstrak daftar file audio...',
+    });
+
+    try {
+      const extracted = await collectAudioFilesFromSelection(fileArray);
+
+      if (extracted.length === 0) {
+        showError(
+          'Tidak ditemukan file audio yang didukung (MP3, M4A, WAV, OGG, FLAC) di dalam pilihan atau arsip ZIP tersebut.'
+        );
+        return;
+      }
+
+      const uploadedTracks: TrackItem[] = [];
+      let failedCount = 0;
+
+      for (let i = 0; i < extracted.length; i++) {
+        const item = extracted[i];
+        setBatchUploadProgress({
+          done: i,
+          total: extracted.length,
+          currentName: item.suggestedTitle,
+        });
+
+        try {
+          const secs = await extractAudioDurationSeconds(item.file);
+          const ext = item.file.name.split('.').pop()?.toLowerCase() || 'mp3';
+          const publicUrl = await uploadMediaToSupabase(
+            item.file,
+            'audio',
+            item.suggestedTitle || item.file.name,
+            ext
+          );
+
+          uploadedTracks.push({
+            id: `trk-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+            title: item.suggestedTitle,
+            duration: secs ? formatDurationSeconds(secs) : '03:30',
+            audioUrl: publicUrl,
+            clipMode: 'full',
+            clipStartSec: 0,
+            clipEndSec: secs ? Math.min(30, Math.max(10, Math.round(secs))) : 30,
+          });
+        } catch {
+          failedCount += 1;
+        }
+      }
+
+      if (uploadedTracks.length > 0) {
+        setEditing((prev) => {
+          if (!prev) return prev;
+          const mergedTracks = [...prev.tracks, ...uploadedTracks];
+          const totalSecs = mergedTracks.reduce(
+            (acc, t) => acc + parseDurationToSeconds(t.duration),
+            0
+          );
+          return {
+            ...prev,
+            singleOrMulti: mergedTracks.length > 1 ? 'multi' : prev.singleOrMulti,
+            tracks: mergedTracks,
+            duration: totalSecs > 0 ? formatTotalDuration(totalSecs) : prev.duration,
+          };
+        });
+
+        setStatusMsg(
+          failedCount > 0
+            ? `${uploadedTracks.length} lagu berhasil diimpor otomatis (${failedCount} file gagal). Judul lagu tetap dapat diedit jika perlu.`
+            : `${uploadedTracks.length} lagu berhasil diimpor otomatis beserta judul dan durasinya.`
+        );
+      } else {
+        showError('Semua file audio gagal diunggah. Pastikan koneksi dan batas ukuran file aman.');
+      }
+    } catch (err) {
+      showError(
+        err instanceof Error ? err.message : 'Gagal membaca arsip ZIP atau folder audio.'
+      );
+    } finally {
+      setBatchUploadProgress(null);
     }
   };
 
@@ -554,9 +787,17 @@ export default function VinylLibraryTab({
       const canonical = await onAddGenre(trimmed);
       setNewGenreName('');
       if (editing) {
-        setEditing({ ...editing, genre: canonical });
+        const already = editing.selectedGenres.some(
+          (g) => g.toLowerCase() === canonical.toLowerCase()
+        );
+        if (!already) {
+          setEditing({
+            ...editing,
+            selectedGenres: [...editing.selectedGenres, canonical],
+          });
+        }
       }
-      setStatusMsg(`Genre "${canonical}" ditambahkan ke daftar dropdown.`);
+      setStatusMsg(`Genre "${canonical}" ditambahkan ke daftar pilihan.`);
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Gagal menambah genre.');
     } finally {
@@ -567,7 +808,7 @@ export default function VinylLibraryTab({
   const requestRemoveGenre = (g: GenreItem) => {
     setConfirmState({
       title: `Hapus Genre "${g.name}"?`,
-      description: `Genre "${g.name}" akan dihapus dari daftar pilihan dropdown di dashboard admin.`,
+      description: `Genre "${g.name}" akan dihapus dari daftar pilihan genre di dashboard admin.`,
       confirmLabel: 'Hapus Genre',
       onConfirm: async () => {
         setGenreBusy(true);
@@ -578,7 +819,7 @@ export default function VinylLibraryTab({
             next.delete(g.id);
             return next;
           });
-          setStatusMsg(`Genre "${g.name}" dihapus dari pilihan dropdown.`);
+          setStatusMsg(`Genre "${g.name}" dihapus dari daftar pilihan.`);
         } catch (err) {
           showError(err instanceof Error ? err.message : 'Gagal menghapus genre.');
         } finally {
@@ -594,8 +835,11 @@ export default function VinylLibraryTab({
     if (!editing) return;
     if (!editing.title.trim() || !editing.artist.trim()) return;
 
-    const isSong = editing.releaseType === 'Song';
-    const cleanedTracks = isSong
+    const isSingleMode =
+      editing.releaseType === 'Song' ||
+      (isFlexibleReleaseType(editing.releaseType) && editing.singleOrMulti === 'single');
+
+    const cleanedTracks = isSingleMode
       ? []
       : editing.tracks
           .filter((t) => t.title.trim().length > 0)
@@ -605,12 +849,15 @@ export default function VinylLibraryTab({
             duration: t.duration.trim() || '03:30',
           }));
 
+    const resolvedGenreString =
+      formatGenres(editing.selectedGenres) || 'Indie';
+
     let resolvedAudioUrl = editing.audioUrl.trim() || undefined;
     let resolvedClipMode: ClipMode = editing.clipMode;
     let resolvedClipStart = editing.clipStartSec;
     let resolvedClipEnd = editing.clipEndSec;
 
-    if (!isSong && !resolvedAudioUrl && cleanedTracks.length > 0) {
+    if (!isSingleMode && !resolvedAudioUrl && cleanedTracks.length > 0) {
       const favTrack =
         cleanedTracks.find(
           (t) =>
@@ -632,12 +879,14 @@ export default function VinylLibraryTab({
       const payload: Partial<VinylRecord> = {
         title: editing.title.trim(),
         artist: editing.artist.trim(),
-        album: isSong ? editing.album.trim() : editing.album.trim() || editing.title.trim(),
+        album: isSingleMode
+          ? editing.album.trim()
+          : editing.album.trim() || editing.title.trim(),
         releaseType: editing.releaseType,
         releaseYear: Number(editing.releaseYear) || new Date().getFullYear(),
         duration: editing.duration.trim() || '03:30',
-        genre: editing.genre.trim() || 'Indie',
-        mood: editing.genre.trim() || 'Indie',
+        genre: resolvedGenreString,
+        mood: resolvedGenreString,
         labelColor: editing.labelColor,
         artStyle: editing.artStyle,
         coverUrl: editing.coverUrl || undefined,
@@ -649,8 +898,8 @@ export default function VinylLibraryTab({
           (Number(resolvedClipStart) || 0) + 5,
           Number(resolvedClipEnd) || 30
         ),
-        favoriteLyric: isSong ? editing.favoriteLyric.trim() : '',
-        favoriteSong: !isSong ? editing.favoriteSong.trim() : '',
+        favoriteLyric: isSingleMode ? editing.favoriteLyric.trim() : '',
+        favoriteSong: !isSingleMode ? editing.favoriteSong.trim() : '',
         tracks: cleanedTracks,
         linerNotes: editing.linerNotes.trim(),
         rackSlot: editing.rackSlot,
@@ -699,7 +948,17 @@ export default function VinylLibraryTab({
   const getThumb = (v: VinylRecord) =>
     v.coverUrl || (typeof window !== 'undefined' ? getSleeveDataUrl(v) : '');
 
-  const isSongMode = editing?.releaseType === 'Song';
+  const isSingleMode =
+    editing?.releaseType === 'Song' ||
+    (Boolean(editing) &&
+      isFlexibleReleaseType(editing!.releaseType) &&
+      editing!.singleOrMulti === 'single');
+
+  const isUploadingAny =
+    uploadingCover ||
+    uploadingAudio ||
+    uploadingTrackId !== null ||
+    batchUploadProgress !== null;
 
   return (
     <div className="space-y-5">
@@ -792,7 +1051,6 @@ export default function VinylLibraryTab({
             ))}
           </div>
 
-          {/* Bulk Select & Delete Controls for Vinyls */}
           <div className="flex flex-wrap items-center gap-2">
             {filteredVinyls.length > 0 && (
               <button
@@ -827,12 +1085,12 @@ export default function VinylLibraryTab({
           </div>
         </div>
 
-        {/* Expandable Genre Dropdown Manager with Single & Bulk Delete */}
+        {/* Expandable Genre Manager */}
         {showGenreManager && (
           <div className="rounded-2xl border border-[#4A2E1B]/15 bg-white/88 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
-                KELOLA PILIHAN GENRE DROPDOWN (TAMBAH &amp; HAPUS SATUAN / MASSAL)
+                KELOLA DAFTAR GENRE (TAMBAH &amp; HAPUS SATUAN / MASSAL)
               </p>
 
               <div className="flex items-center gap-2">
@@ -876,7 +1134,7 @@ export default function VinylLibraryTab({
                     handleQuickAddGenre();
                   }
                 }}
-                placeholder="Nama genre baru (misal: Shoegaze, Jazz, Bossa Nova)..."
+                placeholder="Nama genre baru (misal: Shoegaze, Jazz, Dream Pop)..."
                 className="flex-1 rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-1.5 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
               />
               <button
@@ -931,12 +1189,13 @@ export default function VinylLibraryTab({
         )}
       </div>
 
-      {/* Vinyl Collection Cards with Bulk Checkboxes */}
+      {/* Vinyl Collection Cards */}
       <div className="grid grid-cols-1 gap-3.5 md:grid-cols-2">
         {filteredVinyls.map((v) => {
           const isOnTurntable = v.id === activeTurntableVinylId;
-          const isMulti = v.releaseType !== 'Song';
+          const isMulti = hasMultipleTracks(v);
           const isSelected = selectedVinylIds.has(v.id);
+          const gList = parseGenres(v.genre || v.mood);
 
           return (
             <article
@@ -967,9 +1226,14 @@ export default function VinylLibraryTab({
                   <span className="rounded-full bg-[#4A2E1B] px-2 py-0.5 font-mono text-[9px] font-semibold text-[#FAF5EC] uppercase">
                     {v.releaseType}
                   </span>
-                  <span className="rounded-full bg-[#4A2E1B]/10 px-2 py-0.5 font-mono text-[9px] font-semibold text-[#5C3B24] uppercase">
-                    {v.genre}
-                  </span>
+                  {gList.map((g) => (
+                    <span
+                      key={g}
+                      className="rounded-full bg-[#4A2E1B]/10 px-2 py-0.5 font-mono text-[9px] font-semibold text-[#5C3B24] uppercase"
+                    >
+                      {g}
+                    </span>
+                  ))}
                   {v.clipMode === 'snippet' && (
                     <span className="rounded-full bg-[#B58A52]/20 px-2 py-0.5 font-mono text-[9px] font-semibold text-[#6E4D1B] uppercase">
                       SEBAGIAN ({formatSecLabel(v.clipStartSec ?? 0)}-
@@ -1035,7 +1299,9 @@ export default function VinylLibraryTab({
         createPortal(
           <div
             className="fixed inset-0 z-[90] flex items-center justify-center bg-[#18110C]/62 p-4 backdrop-blur-md"
-            onClick={() => setEditing(null)}
+            onClick={() => {
+              if (!batchUploadProgress) setEditing(null);
+            }}
           >
             <form
               onSubmit={handleSubmit}
@@ -1052,8 +1318,9 @@ export default function VinylLibraryTab({
                 </div>
                 <button
                   type="button"
+                  disabled={Boolean(batchUploadProgress)}
                   onClick={() => setEditing(null)}
-                  className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/15 bg-[#FAF5EC] text-[#4A2E1B] hover:bg-white"
+                  className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/15 bg-[#FAF5EC] text-[#4A2E1B] hover:bg-white disabled:opacity-40"
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -1199,12 +1466,12 @@ export default function VinylLibraryTab({
                   <div className="rounded-2xl border border-[#4A2E1B]/12 bg-white/85 p-4">
                     <p className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
                       <Music2 className="h-3.5 w-3.5" />
-                      {isSongMode
+                      {isSingleMode
                         ? 'AUDIO LAGU (MP3) & DURASI PUTAR'
                         : 'AUDIO UTAMA TURNTABLE (OPSIONAL)'}
                     </p>
                     <p className="mt-1 text-[11px] text-[#6B5442]">
-                      {isSongMode
+                      {isSingleMode
                         ? 'Upload MP3, lalu pilih putar Full Song atau geser rentang & playhead snippet bebas.'
                         : 'Opsional. Jika dikosongkan, turntable otomatis memutar lagu favorit / lagu pertama dari daftar track.'}
                     </p>
@@ -1212,7 +1479,7 @@ export default function VinylLibraryTab({
                     <input
                       ref={audioInputRef}
                       type="file"
-                      accept="audio/mpeg,audio/mp3,audio/mp4,audio/wav,audio/ogg"
+                      accept="audio/mpeg,audio/mp3,audio/mp4,audio/wav,audio/ogg,audio/flac"
                       className="hidden"
                       onChange={handleMainAudioSelect}
                     />
@@ -1296,7 +1563,7 @@ export default function VinylLibraryTab({
                   </div>
                 </div>
 
-                {/* Right Column: Release Type Switch + Metadata + Dynamic Fields */}
+                {/* Right Column: Release Type Switch + Metadata + Multi-Genre + Dynamic Fields */}
                 <div className="space-y-3.5 lg:col-span-7">
                   <div className="rounded-2xl border border-[#4A2E1B]/15 bg-[#F4ECE0]/80 p-3.5">
                     <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
@@ -1307,7 +1574,7 @@ export default function VinylLibraryTab({
                         <button
                           key={rt}
                           type="button"
-                          onClick={() => setEditing({ ...editing, releaseType: rt })}
+                          onClick={() => handleReleaseTypeChange(rt)}
                           className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
                             editing.releaseType === rt
                               ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC] shadow-xs'
@@ -1318,24 +1585,62 @@ export default function VinylLibraryTab({
                         </button>
                       ))}
                     </div>
+
+                    {/* Single vs Multi-Track Option for Live Version & Cover */}
+                    {isFlexibleReleaseType(editing.releaseType) && (
+                      <div className="mt-3 border-t border-[#4A2E1B]/10 pt-3">
+                        <span className="font-mono text-[9.5px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                          Format {editing.releaseType}
+                        </span>
+                        <div className="mt-1.5 grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditing({ ...editing, singleOrMulti: 'single' })
+                            }
+                            className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                              editing.singleOrMulti === 'single'
+                                ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
+                                : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#FAF5EC]'
+                            }`}
+                          >
+                            1 Lagu (Favorite Lyrics)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditing({ ...editing, singleOrMulti: 'multi' })
+                            }
+                            className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                              editing.singleOrMulti === 'multi'
+                                ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
+                                : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#FAF5EC]'
+                            }`}
+                          >
+                            Banyak Lagu (Tracklist &amp; Fav Song)
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     <p className="mt-2 text-[11px] text-[#6E5643]">
-                      {isSongMode
-                        ? 'Mode Lagu Favorit: satu track tunggal dengan Favorite Lyrics.'
-                        : `Mode ${editing.releaseType}: tampilkan daftar lengkap lagu (Tracklist) & pilihan Favorite Song.`}
+                      {isSingleMode
+                        ? 'Mode 1 Lagu: menggunakan Favorite Lyrics, di katalog pengunjung tombolnya otomatis "Details".'
+                        : `Mode Multi-Track (${editing.releaseType}): gunakan daftar tracklist & Favorite Song, di katalog pengunjung tombolnya otomatis "Tracklist".`}
                     </p>
                   </div>
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <label className="block">
                       <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
-                        {isSongMode ? 'Judul Lagu *' : `Judul ${editing.releaseType} *`}
+                        {isSingleMode ? 'Judul Lagu *' : `Judul ${editing.releaseType} *`}
                       </span>
                       <input
                         type="text"
                         required
                         value={editing.title}
                         onChange={(e) => setEditing({ ...editing, title: e.target.value })}
-                        placeholder={isSongMode ? 'e.g. Cornerstone' : 'e.g. Currents'}
+                        placeholder={isSingleMode ? 'e.g. Cornerstone' : 'e.g. Currents'}
                         className="mt-1 w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 text-sm text-[#241A13] outline-none focus:border-[#4A2E1B]"
                       />
                     </label>
@@ -1356,7 +1661,7 @@ export default function VinylLibraryTab({
                   </div>
 
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                    {isSongMode && (
+                    {isSingleMode && (
                       <label className="col-span-2 block sm:col-span-1">
                         <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
                           Dari Album (Opsional)
@@ -1393,19 +1698,19 @@ export default function VinylLibraryTab({
 
                     <label className="block">
                       <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
-                        {isSongMode ? 'Durasi Lagu *' : 'Total Durasi'}
+                        {isSingleMode ? 'Durasi Lagu *' : 'Total Durasi'}
                       </span>
                       <input
                         type="text"
                         required
                         value={editing.duration}
                         onChange={(e) => setEditing({ ...editing, duration: e.target.value })}
-                        placeholder={isSongMode ? '03:45' : '42:10'}
+                        placeholder={isSingleMode ? '03:45' : '42:10'}
                         className="mt-1 w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 font-mono text-sm text-[#241A13] outline-none focus:border-[#4A2E1B]"
                       />
                     </label>
 
-                    {!isSongMode && (
+                    {!isSingleMode && (
                       <div className="col-span-2 sm:col-span-1">
                         <span className="block font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
                           Slot Kontainer Rak
@@ -1427,49 +1732,92 @@ export default function VinylLibraryTab({
                     )}
                   </div>
 
-                  {/* Themed Genre Dropdown + Rack Slot */}
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {/* Multi-Genre Selector Chips + Inline Quick Add */}
+                  <div className="rounded-2xl border border-[#4A2E1B]/15 bg-white/85 p-3.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                        Genre (Bisa Pilih Lebih dari Satu) *
+                      </span>
+                      <span className="font-mono text-[9.5px] font-semibold text-[#7A5230]">
+                        {editing.selectedGenres.length} dipilih
+                      </span>
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {genreNames.map((gName) => {
+                        const active = editing.selectedGenres.some(
+                          (s) => s.toLowerCase() === gName.toLowerCase()
+                        );
+                        return (
+                          <button
+                            key={gName}
+                            type="button"
+                            onClick={() => toggleEditingGenre(gName)}
+                            className={`inline-flex cursor-pointer items-center gap-1 rounded-full border px-2.5 py-1 font-mono text-[10px] font-semibold transition ${
+                              active
+                                ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC] shadow-xs'
+                                : 'border-[#4A2E1B]/18 bg-[#FAF5EC] text-[#5C4432] hover:border-[#4A2E1B]/45 hover:bg-white'
+                            }`}
+                          >
+                            {active && <Check className="h-2.5 w-2.5" />}
+                            <span>{gName}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="mt-2.5 flex gap-2 border-t border-[#4A2E1B]/10 pt-2.5">
+                      <input
+                        type="text"
+                        value={inlineGenreInput}
+                        onChange={(e) => setInlineGenreInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void handleAddInlineGenre();
+                          }
+                        }}
+                        placeholder="Tambah genre baru & langsung pilih..."
+                        className="flex-1 rounded-xl border border-[#4A2E1B]/16 bg-[#FAF5EC]/70 px-3 py-1.5 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B] focus:bg-white"
+                      />
+                      <button
+                        type="button"
+                        disabled={genreBusy || !inlineGenreInput.trim()}
+                        onClick={() => void handleAddInlineGenre()}
+                        className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-[#4A2E1B]/20 bg-[#F2E7D7] px-3 py-1.5 text-xs font-semibold text-[#4A2E1B] hover:bg-[#E7D6BE] disabled:opacity-45"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        <span>Tambah</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {isSingleMode && (
                     <div>
                       <span className="block font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
-                        Genre *
+                        Slot Kontainer Rak
                       </span>
                       <ThemedDropdown
-                        value={editing.genre}
-                        options={genreDropdownOptions}
-                        onChange={(val) => setEditing({ ...editing, genre: val })}
-                        ariaLabel="Pilih genre"
+                        value={editing.rackSlot !== null ? String(editing.rackSlot) : ''}
+                        options={RACK_SLOT_OPTIONS}
+                        onChange={(val) =>
+                          setEditing({
+                            ...editing,
+                            rackSlot: val ? parseInt(val, 10) : null,
+                          })
+                        }
+                        ariaLabel="Pilih slot kontainer rak"
                         size="sm"
                         className="mt-1"
                       />
                     </div>
+                  )}
 
-                    {isSongMode && (
-                      <div>
-                        <span className="block font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
-                          Slot Kontainer Rak
-                        </span>
-                        <ThemedDropdown
-                          value={editing.rackSlot !== null ? String(editing.rackSlot) : ''}
-                          options={RACK_SLOT_OPTIONS}
-                          onChange={(val) =>
-                            setEditing({
-                              ...editing,
-                              rackSlot: val ? parseInt(val, 10) : null,
-                            })
-                          }
-                          ariaLabel="Pilih slot kontainer rak"
-                          size="sm"
-                          className="mt-1"
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  {/* CONDITIONAL SECTION: Song vs Album/EP/Single/Live/Cover */}
-                  {isSongMode ? (
+                  {/* CONDITIONAL SECTION: Single Song vs Multi-Track */}
+                  {isSingleMode ? (
                     <label className="block">
                       <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
-                        Favorite Lyrics
+                        Favorite Lyrics (Opsional — Kosongkan Jika Tidak Ada)
                       </span>
                       <textarea
                         rows={2}
@@ -1477,7 +1825,7 @@ export default function VinylLibraryTab({
                         onChange={(e) =>
                           setEditing({ ...editing, favoriteLyric: e.target.value })
                         }
-                        placeholder="Kutipan lirik favorit yang tampil di jurnal meja & liner notes..."
+                        placeholder="Kutipan lirik favorit yang tampil di jurnal meja, liner notes & katalog lo-fi..."
                         className="mt-1 w-full resize-none rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 text-sm text-[#241A13] outline-none focus:border-[#4A2E1B]"
                       />
                     </label>
@@ -1486,7 +1834,7 @@ export default function VinylLibraryTab({
                       <label className="block">
                         <span className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
                           <Star className="h-3 w-3 text-[#B58A52]" />
-                          Favorite Song (Dari {editing.releaseType} Ini)
+                          Favorite Song (Opsional — Dari {editing.releaseType} Ini)
                         </span>
                         <input
                           type="text"
@@ -1507,61 +1855,132 @@ export default function VinylLibraryTab({
                         </datalist>
                       </label>
 
-                      {/* Tracklist Builder with Single & Bulk Delete */}
+                      {/* Tracklist Builder + Batch Folder / ZIP / Multi-MP3 Upload */}
                       <div className="rounded-2xl border border-[#4A2E1B]/15 bg-white/85 p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
                           <div>
                             <p className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
                               <ListMusic className="h-3.5 w-3.5" />
                               DAFTAR LAGU ({editing.tracks.length} TRACK)
                             </p>
-                            <p className="text-[11px] text-[#735D4B]">
-                              Isi semua lagu dalam {editing.releaseType} ini. Ceklis untuk menghapus beberapa lagu sekaligus.
+                            <p className="mt-0.5 text-[11px] text-[#735D4B]">
+                              Upload folder atau file .ZIP kumpulan lagu untuk menangkap judul &amp; MP3 otomatis (judul tetap bisa diedit).
                             </p>
                           </div>
 
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            {editing.tracks.length > 0 && (
-                              <button
-                                type="button"
-                                onClick={toggleSelectAllTracks}
-                                className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-[#4A2E1B]/20 bg-[#FAF5EC] px-2.5 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#EFE4D3]"
-                              >
-                                {allTracksSelected ? (
-                                  <CheckSquare className="h-3 w-3" />
-                                ) : (
-                                  <Square className="h-3 w-3" />
-                                )}
-                                <span>{allTracksSelected ? 'Batal' : 'Pilih Semua'}</span>
-                              </button>
-                            )}
+                          {/* Hidden Inputs for Folder and ZIP/Multi-Audio */}
+                          <input
+                            ref={bindFolderInputRef}
+                            type="file"
+                            multiple
+                            className="hidden"
+                            onChange={(e) => void handleBatchAudioSelection(e)}
+                          />
+                          <input
+                            ref={zipOrMultiInputRef}
+                            type="file"
+                            multiple
+                            accept=".zip,application/zip,audio/mpeg,audio/mp3,audio/mp4,audio/wav,audio/ogg,audio/flac"
+                            className="hidden"
+                            onChange={(e) => void handleBatchAudioSelection(e)}
+                          />
+                        </div>
 
-                            {selectedTrackIds.size > 0 && (
-                              <button
-                                type="button"
-                                onClick={requestRemoveSelectedTracks}
-                                className="inline-flex cursor-pointer items-center gap-1 rounded-xl bg-[#6E1D2C] px-2.5 py-1.5 text-[11px] font-semibold text-[#FAF5EC] hover:bg-[#571622]"
-                              >
-                                <Trash2 className="h-3 w-3" />
-                                <span>Hapus ({selectedTrackIds.size})</span>
-                              </button>
-                            )}
+                        {/* Action Bar: Folder Upload, ZIP/Multi-MP3 Upload, Manual Add & Bulk Delete */}
+                        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={Boolean(batchUploadProgress)}
+                            onClick={() => folderInputRef.current?.click()}
+                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#4A2E1B] px-3 py-1.5 text-[11px] font-semibold text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] disabled:opacity-50"
+                          >
+                            <FolderUp className="h-3.5 w-3.5" />
+                            <span>Upload Folder Lagu</span>
+                          </button>
 
+                          <button
+                            type="button"
+                            disabled={Boolean(batchUploadProgress)}
+                            onClick={() => zipOrMultiInputRef.current?.click()}
+                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/25 bg-[#F2E7D7] px-3 py-1.5 text-[11px] font-semibold text-[#4A2E1B] transition hover:bg-[#E7D6BE] disabled:opacity-50"
+                          >
+                            <FileArchive className="h-3.5 w-3.5" />
+                            <span>Upload ZIP / Multi-MP3</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={Boolean(batchUploadProgress)}
+                            onClick={handleAddTrackRow}
+                            className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#FAF5EC] disabled:opacity-50"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            <span>Tambah Manual</span>
+                          </button>
+
+                          {editing.tracks.length > 0 && (
                             <button
                               type="button"
-                              onClick={handleAddTrackRow}
-                              className="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-xl bg-[#4A2E1B] px-3 py-1.5 text-[11px] font-semibold text-[#FAF5EC] hover:bg-[#3A2213]"
+                              onClick={toggleSelectAllTracks}
+                              className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-[#4A2E1B]/20 bg-[#FAF5EC] px-2.5 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#EFE4D3]"
                             >
-                              <Plus className="h-3.5 w-3.5" />
-                              <span>Tambah Lagu</span>
+                              {allTracksSelected ? (
+                                <CheckSquare className="h-3 w-3" />
+                              ) : (
+                                <Square className="h-3 w-3" />
+                              )}
+                              <span>{allTracksSelected ? 'Batal' : 'Pilih Semua'}</span>
                             </button>
-                          </div>
+                          )}
+
+                          {selectedTrackIds.size > 0 && (
+                            <button
+                              type="button"
+                              onClick={requestRemoveSelectedTracks}
+                              className="inline-flex cursor-pointer items-center gap-1 rounded-xl bg-[#6E1D2C] px-2.5 py-1.5 text-[11px] font-semibold text-[#FAF5EC] hover:bg-[#571622]"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                              <span>Hapus ({selectedTrackIds.size})</span>
+                            </button>
+                          )}
                         </div>
+
+                        {/* Live Batch Upload Progress Indicator */}
+                        {batchUploadProgress && (
+                          <div className="mt-3 rounded-xl border border-[#C89B54]/45 bg-[#FFF8EB] p-3 text-xs text-[#3A2213]">
+                            <div className="flex items-center justify-between gap-2 font-semibold">
+                              <span className="inline-flex min-w-0 items-center gap-2">
+                                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[#7A5230]" />
+                                <span className="truncate">
+                                  Mengunggah: {batchUploadProgress.currentName}
+                                </span>
+                              </span>
+                              <span className="shrink-0 font-mono text-[10.5px] text-[#7A5230]">
+                                {batchUploadProgress.done}/{batchUploadProgress.total}
+                              </span>
+                            </div>
+                            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#4A2E1B]/12">
+                              <div
+                                className="h-full rounded-full bg-[#4A2E1B] transition-[width] duration-200"
+                                style={{
+                                  width: `${Math.max(
+                                    6,
+                                    Math.round(
+                                      (batchUploadProgress.done /
+                                        Math.max(1, batchUploadProgress.total)) *
+                                        100
+                                    )
+                                  )}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        )}
 
                         <div className="mt-3 space-y-2.5">
                           {editing.tracks.length === 0 ? (
                             <p className="rounded-xl border border-dashed border-[#4A2E1B]/20 bg-[#FAF5EC] py-4 text-center text-xs text-[#8A7360]">
-                              Belum ada lagu di daftar. Klik &ldquo;Tambah Lagu&rdquo; untuk mengisi tracklist.
+                              Belum ada lagu di daftar. Upload folder/ZIP kumpulan lagu atau klik &ldquo;Tambah Manual&rdquo;.
                             </p>
                           ) : (
                             editing.tracks.map((trk, idx) => {
@@ -1610,7 +2029,7 @@ export default function VinylLibraryTab({
                                         trackAudioRefs.current[trk.id] = el;
                                       }}
                                       type="file"
-                                      accept="audio/mpeg,audio/mp3,audio/mp4,audio/wav,audio/ogg"
+                                      accept="audio/mpeg,audio/mp3,audio/mp4,audio/wav,audio/ogg,audio/flac"
                                       className="hidden"
                                       onChange={(e) => handleTrackAudioSelect(trk.id, e)}
                                     />
@@ -1618,7 +2037,11 @@ export default function VinylLibraryTab({
                                       type="button"
                                       disabled={uploadingTrackId === trk.id}
                                       onClick={() => trackAudioRefs.current[trk.id]?.click()}
-                                      className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#4A2E1B]/20 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#EFE5D5] disabled:opacity-50"
+                                      className={`inline-flex cursor-pointer items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50 ${
+                                        trk.audioUrl
+                                          ? 'border-emerald-700/25 bg-emerald-500/10 text-emerald-900 hover:bg-emerald-500/20'
+                                          : 'border-[#4A2E1B]/20 bg-white text-[#4A2E1B] hover:bg-[#EFE5D5]'
+                                      }`}
                                     >
                                       <Upload className="h-3 w-3" />
                                       <span>
@@ -1707,7 +2130,7 @@ export default function VinylLibraryTab({
                   {/* Curator Notes */}
                   <label className="block">
                     <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
-                      Curator Liner Notes
+                      Curator Liner Notes (Opsional — Kosongkan Jika Tidak Ada)
                     </span>
                     <textarea
                       rows={3}
@@ -1726,14 +2149,15 @@ export default function VinylLibraryTab({
               <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-[#4A2E1B]/12 bg-[#F4ECE0] px-6 py-4">
                 <button
                   type="button"
+                  disabled={Boolean(batchUploadProgress)}
                   onClick={() => setEditing(null)}
-                  className="cursor-pointer rounded-xl border border-[#4A2E1B]/20 bg-white px-4 py-2 text-xs font-semibold text-[#4A2E1B] hover:bg-[#EFE5D5]"
+                  className="cursor-pointer rounded-xl border border-[#4A2E1B]/20 bg-white px-4 py-2 text-xs font-semibold text-[#4A2E1B] hover:bg-[#EFE5D5] disabled:opacity-45"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  disabled={saving || uploadingCover || uploadingAudio || uploadingTrackId !== null}
+                  disabled={saving || isUploadingAny}
                   className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#4A2E1B] px-5 py-2 text-xs font-semibold text-[#FAF5EC] shadow-md transition hover:bg-[#3A2213] disabled:opacity-50"
                 >
                   <Save className="h-3.5 w-3.5" />

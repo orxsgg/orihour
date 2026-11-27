@@ -7,6 +7,11 @@ import {
   RoomConfig,
   VinylRecord,
 } from '@/types/orihour';
+import {
+  hasMultipleTracks,
+  isSingleSongRelease,
+  parseGenres,
+} from '@/lib/genreUtils';
 
 const sleeveDataUrlCache = new Map<string, string>();
 const corsImageCache = new Map<string, Promise<HTMLImageElement | null>>();
@@ -277,7 +282,6 @@ export function createCoffeeSurfaceTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-// Organic Soft Wispy Steam Texture (Zero Hard Geometric Edges — For Realistic Coffee Steam Sprites)
 export function createSteamWispTexture(): THREE.CanvasTexture {
   if (cachedSteamWispTex) return cachedSteamWispTex;
 
@@ -288,7 +292,6 @@ export function createSteamWispTexture(): THREE.CanvasTexture {
   const ctx = canvas.getContext('2d')!;
   ctx.clearRect(0, 0, size, size);
 
-  // Soft overlapping curling vapor puffs fading seamlessly to 0 before the borders
   const puffs = [
     { x: 64, y: 66, r: 42, a: 0.24 },
     { x: 52, y: 54, r: 32, a: 0.2 },
@@ -309,7 +312,6 @@ export function createSteamWispTexture(): THREE.CanvasTexture {
     ctx.fill();
   }
 
-  // Soft circular edge mask to guarantee zero visible square sprite bounds
   ctx.globalCompositeOperation = 'destination-in';
   const mask = ctx.createRadialGradient(64, 64, 16, 64, 64, 60);
   mask.addColorStop(0, 'rgba(255,255,255,1)');
@@ -1194,19 +1196,19 @@ export function createNotepadTexture(
     ctx.font = 'bold 14px monospace';
     ctx.fillText('PICK A RECORD FROM THE RACK TO BEGIN', 78, h - 68);
   } else {
-    const genreLabel = (vinyl.genre || vinyl.mood || 'Indie').toUpperCase();
+    const isSingle = isSingleSongRelease(vinyl);
+    const isMulti = hasMultipleTracks(vinyl);
+    const genreList = parseGenres(vinyl.genre || vinyl.mood);
+    const genreLabel = (genreList.join(' / ') || 'INDIE').toUpperCase();
     const typeLabel = (vinyl.releaseType || 'Song').toUpperCase();
-    const isSong = vinyl.releaseType === 'Song';
+
+    const metaLine = `${genreLabel} · ${typeLabel} · ${vinyl.releaseYear} · ${
+      isMulti ? `${vinyl.tracks?.length || 0} TRACKS` : vinyl.duration
+    }`;
 
     ctx.fillStyle = '#6E462C';
-    ctx.font = 'bold 17px monospace';
-    ctx.fillText(
-      `${genreLabel} · ${typeLabel} · ${vinyl.releaseYear} · ${
-        isSong ? vinyl.duration : `${vinyl.tracks?.length || 0} TRACKS`
-      }`,
-      78,
-      162
-    );
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText(fitTextEllipsis(ctx, metaLine, w - 154), 78, 162);
 
     ctx.fillStyle = '#1D1713';
     ctx.font = 'bold 42px Georgia, serif';
@@ -1215,54 +1217,65 @@ export function createNotepadTexture(
     ctx.fillStyle = '#5C4D40';
     ctx.font = 'italic 25px Georgia, serif';
     const subline =
-      isSong && vinyl.album ? `${vinyl.artist} - ${vinyl.album}` : vinyl.artist;
+      isSingle && vinyl.album?.trim() ? `${vinyl.artist} - ${vinyl.album}` : vinyl.artist;
     y = wrapTextSafe(ctx, subline, 78, y + 6, w - 156, 34, 2);
 
-    y += 30;
-    const sectionHeaderY = y;
-    ctx.fillStyle = '#4A2E1B';
-    ctx.font = 'bold 15px monospace';
-    ctx.fillText(isSong ? 'FAVORITE LYRIC' : 'FAVORITE SONG', 78, sectionHeaderY);
+    const favLyric = isSingle ? (vinyl.favoriteLyric || '').trim() : '';
+    const favSong = !isSingle ? (vinyl.favoriteSong || '').trim() : '';
+    const notes = (vinyl.linerNotes || '').trim();
 
-    const quoteTopY = sectionHeaderY + 46;
-    ctx.fillStyle = '#241D18';
-    ctx.font = 'italic 29px Georgia, serif';
-    const highlightText = isSong
-      ? vinyl.favoriteLyric
-        ? `"${vinyl.favoriteLyric}"`
-        : '"-"'
-      : vinyl.favoriteSong || vinyl.tracks?.[0]?.title || '-';
-    const afterQuoteY = wrapTextSafe(
-      ctx,
-      highlightText,
-      102,
-      quoteTopY,
-      w - 180,
-      44,
-      isSong ? 3 : 2
-    );
+    if (favLyric) {
+      y += 30;
+      ctx.fillStyle = '#4A2E1B';
+      ctx.font = 'bold 15px monospace';
+      ctx.fillText('FAVORITE LYRIC', 78, y);
 
-    const barTop = quoteTopY - 26;
-    const barBottom = Math.max(barTop + 30, afterQuoteY - 32);
-    ctx.fillStyle = '#4A2E1B';
-    ctx.fillRect(78, barTop, 4, barBottom - barTop);
+      const quoteTopY = y + 44;
+      ctx.fillStyle = '#241D18';
+      ctx.font = 'italic 29px Georgia, serif';
+      const afterQuoteY = wrapTextSafe(
+        ctx,
+        `"${favLyric}"`,
+        102,
+        quoteTopY,
+        w - 180,
+        44,
+        3
+      );
 
-    const notesHeaderY = afterQuoteY + 26;
-    ctx.fillStyle = '#4A2E1B';
-    ctx.font = 'bold 15px monospace';
-    ctx.fillText('CURATOR NOTES', 78, notesHeaderY);
+      const barTop = quoteTopY - 26;
+      const barBottom = Math.max(barTop + 30, afterQuoteY - 32);
+      ctx.fillStyle = '#4A2E1B';
+      ctx.fillRect(78, barTop, 4, barBottom - barTop);
+      y = afterQuoteY;
+    } else if (favSong) {
+      y += 30;
+      ctx.fillStyle = '#4A2E1B';
+      ctx.font = 'bold 15px monospace';
+      ctx.fillText('FAVORITE TRACK', 78, y);
 
-    ctx.fillStyle = '#312923';
-    ctx.font = '25px Georgia, serif';
-    wrapTextSafe(
-      ctx,
-      vinyl.linerNotes || 'Curator notes have not been written for this pressing yet.',
-      78,
-      notesHeaderY + 42,
-      w - 156,
-      44,
-      6
-    );
+      const songTopY = y + 44;
+      ctx.fillStyle = '#241D18';
+      ctx.font = 'italic 29px Georgia, serif';
+      const afterSongY = wrapTextSafe(ctx, favSong, 102, songTopY, w - 180, 44, 2);
+
+      const barTop = songTopY - 26;
+      const barBottom = Math.max(barTop + 30, afterSongY - 32);
+      ctx.fillStyle = '#4A2E1B';
+      ctx.fillRect(78, barTop, 4, barBottom - barTop);
+      y = afterSongY;
+    }
+
+    if (notes) {
+      const notesHeaderY = y + 28;
+      ctx.fillStyle = '#4A2E1B';
+      ctx.font = 'bold 15px monospace';
+      ctx.fillText('CURATOR NOTES', 78, notesHeaderY);
+
+      ctx.fillStyle = '#312923';
+      ctx.font = '25px Georgia, serif';
+      wrapTextSafe(ctx, notes, 78, notesHeaderY + 42, w - 156, 44, 7);
+    }
 
     ctx.fillStyle = '#8A7968';
     ctx.font = 'bold 14px monospace';
@@ -1506,7 +1519,6 @@ export function createVinylDiscTexture(vinyl: VinylRecord): THREE.CanvasTexture 
   return tex;
 }
 
-// Mid-Century Warm Backlit Split-Flip Chronometer Face
 export function drawFlipClockFace(
   canvas: HTMLCanvasElement,
   hourDecimal: number,
@@ -1950,7 +1962,6 @@ export function createGrassClumpTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-// Natural Organic Fissured Oak/Maple Bark PBR (Zero Artificial Vertical Barcode Stripes)
 export function createBarkPbr(): { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture } {
   if (cachedBarkPbr) return cachedBarkPbr;
 
@@ -1968,13 +1979,11 @@ export function createBarkPbr(): { map: THREE.CanvasTexture; bumpMap: THREE.Canv
     return s - Math.floor(s);
   };
 
-  // Warm deep weathered oak base
   ctx.fillStyle = '#3C2E24';
   ctx.fillRect(0, 0, size, size);
   bCtx.fillStyle = '#6A6A6A';
   bCtx.fillRect(0, 0, size, size);
 
-  // Helper to draw seamlessly tiled organic shapes across canvas edges
   const drawWrappedPlate = (
     cx: number,
     cy: number,
@@ -2023,7 +2032,6 @@ export function createBarkPbr(): { map: THREE.CanvasTexture; bumpMap: THREE.Canv
     }
   };
 
-  // 1. Overlapping organic weathered bark plates (varied sizes, natural muted tones)
   const platePalette = [
     '#4A3B2F',
     '#534336',
@@ -2055,7 +2063,6 @@ export function createBarkPbr(): { map: THREE.CanvasTexture; bumpMap: THREE.Canv
     );
   }
 
-  // 2. Irregular organic wandering bark furrows (non-periodic, natural branching crevices)
   for (let i = 0; i < 48; i++) {
     let x = hash(i * 3.17 + 7.2) * size;
     let y = hash(i * 6.41 + 1.5) * size;
@@ -2100,7 +2107,6 @@ export function createBarkPbr(): { map: THREE.CanvasTexture; bumpMap: THREE.Canv
     }
   }
 
-  // 3. Subtle horizontal bark knots, lenticels & weathered moss/lichen hints
   for (let i = 0; i < 60; i++) {
     const x = hash(i * 14.3 + 2.1) * size;
     const y = hash(i * 21.7 + 5.4) * size;
@@ -2123,7 +2129,6 @@ export function createBarkPbr(): { map: THREE.CanvasTexture; bumpMap: THREE.Canv
     }
   }
 
-  // 4. Fine organic surface grain
   for (let i = 0; i < 3200; i++) {
     const x = hash(i * 12.9898 + 1.1) * size;
     const y = hash(i * 78.233 + 3.9) * size;

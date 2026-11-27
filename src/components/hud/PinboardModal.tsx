@@ -23,7 +23,6 @@ interface PinboardModalProps {
   onClose: () => void;
 }
 
-// Warm cohesive Orihour palette (walnut, burgundy, brass, sienna, olive, charcoal — zero teal/blue)
 const PIN_COLOR_OPTIONS = [
   { hex: '#4A2E1B', label: 'Espresso' },
   { hex: '#6E1D2C', label: 'Burgundy' },
@@ -37,7 +36,7 @@ function formatDateOnly(card: GuestbookPostcard): string {
   if (card.createdAt) {
     const d = new Date(card.createdAt);
     if (!Number.isNaN(d.getTime())) {
-      return d.toLocaleDateString('id-ID', {
+      return d.toLocaleDateString('en-GB', {
         day: '2-digit',
         month: 'short',
         year: 'numeric',
@@ -76,7 +75,7 @@ export default function PinboardModal({
     const cleanReason = reason.trim();
 
     if (!cleanSong || !cleanArtist || !cleanSender || !cleanReason) {
-      setErrorMsg('Lengkapi judul lagu, artis, nama pengirim, dan pesan singkatmu.');
+      setErrorMsg('Please fill in the song title, artist, your name, and a short note.');
       return;
     }
 
@@ -94,11 +93,11 @@ export default function PinboardModal({
       setArtist('');
       setSenderName('');
       setReason('');
-      setSuccessMsg('Kartu pos berhasil ditempel ke papan gabus ruangan!');
+      setSuccessMsg('Your postcard has been pinned to the corkboard!');
       setTimeout(() => setSuccessMsg(null), 3500);
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Gagal mengirim kartu pos. Coba lagi.'
+        err instanceof Error ? err.message : 'Failed to pin your postcard. Please try again.'
       );
     } finally {
       setSubmitting(false);
@@ -148,7 +147,7 @@ export default function PinboardModal({
                 LEAVE A RECOMMENDATION
               </p>
               <p className="mt-1 text-xs text-[#655040]">
-                Rekomendasikan satu lagu favoritmu untuk ditempel langsung di papan gabus 3D Orihour.
+                Recommend a favorite track to pin directly onto the 3D corkboard in this room.
               </p>
             </div>
 
@@ -225,7 +224,7 @@ export default function PinboardModal({
                 maxLength={POSTCARD_LIMITS.reason}
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
-                placeholder="Kenapa lagu ini cocok diputar di ruangan ini?"
+                placeholder="Why does this song fit the mood of this room?"
                 className="mt-1 w-full resize-none rounded-xl border border-[#4A2E1B]/18 bg-[#FAF5EC]/70 px-3 py-2 text-xs leading-relaxed text-[#241A13] placeholder-[#9B8776] outline-none focus:border-[#4A2E1B] focus:bg-white"
               />
             </label>
@@ -276,7 +275,7 @@ export default function PinboardModal({
 
             {postcards.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-[#4A2E1B]/20 bg-white/60 py-14 text-center font-mono text-xs text-[#8A7360]">
-                Belum ada kartu pos yang tertempel. Jadilah yang pertama!
+                No postcards pinned yet. Be the first to recommend a song!
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
