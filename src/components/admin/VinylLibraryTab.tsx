@@ -9,6 +9,7 @@ import {
   Upload,
   FolderUp,
   FileArchive,
+  Film,
   Music2,
   Disc3,
   Save,
@@ -37,6 +38,7 @@ import {
 } from '@/types/orihour';
 import { extractAudioDurationSeconds, formatDurationSeconds } from '@/lib/audioEngine';
 import { collectAudioFilesFromSelection } from '@/lib/audioArchiveExtractor';
+import { convertVideoToMp3 } from '@/lib/videoToMp3';
 import {
   AUDIO_ENHANCE_PRESETS,
   AudioEnhancePreset,
@@ -202,6 +204,11 @@ export default function VinylLibraryTab({
   const [uploadingCover, setUploadingCover] = useState(false);
   const [uploadingAudio, setUploadingAudio] = useState(false);
   const [uploadingTrackId, setUploadingTrackId] = useState<string | null>(null);
+  const [videoConvertProgress, setVideoConvertProgress] = useState<{
+    percent: number;
+    stage: string;
+    fileName: string;
+  } | null>(null);
   const [batchUploadProgress, setBatchUploadProgress] = useState<{
     done: number;
     total: number;
@@ -233,9 +240,12 @@ export default function VinylLibraryTab({
 
   const coverInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
+  const mainVideoInputRef = useRef<HTMLInputElement>(null);
   const zipOrMultiInputRef = useRef<HTMLInputElement>(null);
+  const batchVideoInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const trackAudioRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const trackVideoRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   useEffect(() => {
     setMounted(true);
@@ -264,7 +274,7 @@ export default function VinylLibraryTab({
 
   const showError = (msg: string) => {
     setErrorMsg(msg);
-    setTimeout(() => setErrorMsg(null), 6000);
+    setTimeout(() => setErrorMsg(null), 6500);
   };
 
   const genreNames = useMemo(() => {
@@ -585,6 +595,158 @@ export default function VinylLibraryTab({
     }
   };
 
+  // Convert Single Video -> MP3 (192kbps) & Upload to Supabase Storage
+  const handleMainVideoToMp3 = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const videoFile = e.target.files?.[0];
+    e.target.value = '';
+    if (!videoFile || !editing) return;
+
+    setErrorMsg(null);
+    setVideoConvertProgress({
+      percent: 5,
+      stage: 'Memulai konversi video...',
+      fileName: videoFile.name,
+    });
+
+    try {
+      const converted = await convertVideoToMp3(videoFile, (percent, stage) => {
+        setVideoConvertProgress({ percent, stage, fileName: videoFile.name });
+      });
+
+      setVideoConvertProgress({
+        percent: 96,
+        stage: 'Mengunggah hasil MP3 ke penyimpanan...',
+        fileName: converted.file.name,
+      });
+
+      const publicUrl = await uploadMediaToSupabase(
+        converted.file,
+        'audio',
+        editing.title || converted.suggestedTitle,
+        'mp3'
+      );
+
+      const currentPreset = parseAudioEnhancePreset(editing.audioUrl);
+      const finalUrl = applyAudioEnhancePreset(publicUrl, currentPreset);
+      const durLabel = formatDurationSeconds(converted.durationSec);
+
+      setEditing((prev) =>
+        prev
+          ? {
+              ...prev,
+              title: prev.title.trim() ? prev.title : converted.suggestedTitle,
+              audioUrl: finalUrl,
+              duration: durLabel,
+              clipEndSec:
+                prev.clipMode === 'snippet'
+                  ? Math.min(
+                      Math.round(converted.durationSec),
+                      Math.max(prev.clipStartSec + 10, prev.clipEndSec)
+                    )
+                  : prev.clipEndSec,
+            }
+          : prev
+      );
+
+      setStatusMsg(
+        `Video "${videoFile.name}" berhasil dikonversi ke MP3 (${durLabel}) dan diunggah.`
+      );
+    } catch (err) {
+      showError(
+        err instanceof Error ? err.message : 'Gagal mengonversi video menjadi MP3.'
+      );
+    } finally {
+      setVideoConvertProgress(null);
+    }
+  };
+
+  // Batch Convert Multiple Videos -> MP3 Tracklist
+  const handleBatchVideoToMp3 = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !editing) return;
+    const videoList = Array.from(files);
+    e.target.value = '';
+
+    setErrorMsg(null);
+    const uploadedTracks: TrackItem[] = [];
+    let failedCount = 0;
+
+    try {
+      for (let i = 0; i < videoList.length; i++) {
+        const videoFile = videoList[i];
+        setBatchUploadProgress({
+          done: i,
+          total: videoList.length,
+          currentName: `Konversi video: ${videoFile.name}`,
+        });
+
+        try {
+          const converted = await convertVideoToMp3(videoFile, (pct, stage) => {
+            setBatchUploadProgress({
+              done: i,
+              total: videoList.length,
+              currentName: `${videoFile.name} — ${stage} (${pct}%)`,
+            });
+          });
+
+          setBatchUploadProgress({
+            done: i,
+            total: videoList.length,
+            currentName: `Mengunggah MP3: ${converted.suggestedTitle}`,
+          });
+
+          const publicUrl = await uploadMediaToSupabase(
+            converted.file,
+            'audio',
+            converted.suggestedTitle,
+            'mp3'
+          );
+
+          uploadedTracks.push({
+            id: `trk-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+            title: converted.suggestedTitle,
+            duration: formatDurationSeconds(converted.durationSec),
+            audioUrl: publicUrl,
+            clipMode: 'full',
+            clipStartSec: 0,
+            clipEndSec: Math.min(30, Math.max(10, Math.round(converted.durationSec))),
+          });
+        } catch {
+          failedCount += 1;
+        }
+      }
+
+      if (uploadedTracks.length > 0) {
+        setEditing((prev) => {
+          if (!prev) return prev;
+          const mergedTracks = [...prev.tracks, ...uploadedTracks];
+          const totalSecs = mergedTracks.reduce(
+            (acc, t) => acc + parseDurationToSeconds(t.duration),
+            0
+          );
+          return {
+            ...prev,
+            singleOrMulti: mergedTracks.length > 1 ? 'multi' : prev.singleOrMulti,
+            tracks: mergedTracks,
+            duration: totalSecs > 0 ? formatTotalDuration(totalSecs) : prev.duration,
+          };
+        });
+
+        setStatusMsg(
+          failedCount > 0
+            ? `${uploadedTracks.length} video berhasil dikonversi ke MP3 (${failedCount} gagal).`
+            : `${uploadedTracks.length} video berhasil dikonversi menjadi MP3 dan masuk ke tracklist.`
+        );
+      } else {
+        showError(
+          'Semua video gagal dikonversi. Pastikan video memiliki trek suara dan format didukung (MP4/MOV/WebM).'
+        );
+      }
+    } finally {
+      setBatchUploadProgress(null);
+    }
+  };
+
   const handleBatchAudioSelection = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -806,6 +968,60 @@ export default function VinylLibraryTab({
     }
   };
 
+  const handleTrackVideoToMp3 = async (
+    trackId: string,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const videoFile = e.target.files?.[0];
+    e.target.value = '';
+    if (!videoFile || !editing) return;
+
+    const targetTrack = editing.tracks.find((t) => t.id === trackId);
+    setUploadingTrackId(trackId);
+    setBatchUploadProgress({
+      done: 0,
+      total: 1,
+      currentName: `Konversi video: ${videoFile.name}`,
+    });
+
+    try {
+      const converted = await convertVideoToMp3(videoFile, (pct, stage) => {
+        setBatchUploadProgress({
+          done: 0,
+          total: 1,
+          currentName: `${videoFile.name} — ${stage} (${pct}%)`,
+        });
+      });
+
+      setBatchUploadProgress({
+        done: 0,
+        total: 1,
+        currentName: `Mengunggah MP3: ${converted.suggestedTitle}`,
+      });
+
+      const publicUrl = await uploadMediaToSupabase(
+        converted.file,
+        'audio',
+        targetTrack?.title || converted.suggestedTitle,
+        'mp3'
+      );
+      const existingPreset = parseAudioEnhancePreset(targetTrack?.audioUrl);
+
+      updateTrackRow(trackId, {
+        title: targetTrack?.title?.trim() ? targetTrack.title : converted.suggestedTitle,
+        audioUrl: applyAudioEnhancePreset(publicUrl, existingPreset),
+        duration: formatDurationSeconds(converted.durationSec),
+      });
+    } catch (err) {
+      showError(
+        err instanceof Error ? err.message : 'Gagal mengonversi video untuk track ini.'
+      );
+    } finally {
+      setUploadingTrackId(null);
+      setBatchUploadProgress(null);
+    }
+  };
+
   const handleQuickAddGenre = async () => {
     const trimmed = newGenreName.trim();
     if (!trimmed) return;
@@ -985,6 +1201,7 @@ export default function VinylLibraryTab({
     uploadingCover ||
     uploadingAudio ||
     uploadingTrackId !== null ||
+    videoConvertProgress !== null ||
     batchUploadProgress !== null;
 
   const hasAnyTrackAudio = Boolean(
@@ -1066,13 +1283,13 @@ export default function VinylLibraryTab({
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2.5 border-t border-[#4A2E1B]/10 pt-3">
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto sm:flex-wrap sm:overflow-visible">
             {(['ALL', ...RELEASE_TYPES] as const).map((rt) => (
               <button
                 key={rt}
                 type="button"
                 onClick={() => setTypeFilter(rt)}
-                className={`cursor-pointer rounded-full border px-3 py-1 font-mono text-[10px] font-semibold whitespace-nowrap uppercase transition ${
+                className={`shrink-0 cursor-pointer whitespace-nowrap rounded-full border px-3 py-1 font-mono text-[10px] font-semibold uppercase transition ${
                   typeFilter === rt
                     ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
                     : 'border-[#4A2E1B]/15 bg-white/80 text-[#5C4432] hover:bg-white'
@@ -1088,7 +1305,7 @@ export default function VinylLibraryTab({
               <button
                 type="button"
                 onClick={toggleSelectAllVinyls}
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-1.5 text-xs font-semibold whitespace-nowrap text-[#4A2E1B] transition hover:bg-[#EFE4D3]"
+                className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-1.5 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3]"
               >
                 {allFilteredVinylsSelected ? (
                   <CheckSquare className="h-3.5 w-3.5" />
@@ -1104,7 +1321,7 @@ export default function VinylLibraryTab({
                 type="button"
                 disabled={bulkDeletingVinyls}
                 onClick={requestBulkDeleteVinyls}
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#6E1D2C] px-3.5 py-1.5 text-xs font-semibold whitespace-nowrap text-[#FAF5EC] shadow-xs transition hover:bg-[#571622] disabled:opacity-50"
+                className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-xl bg-[#6E1D2C] px-3.5 py-1.5 text-xs font-semibold text-[#FAF5EC] shadow-xs transition hover:bg-[#571622] disabled:opacity-50"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 <span>
@@ -1340,27 +1557,27 @@ export default function VinylLibraryTab({
         mounted &&
         createPortal(
           <div
-            className="fixed inset-0 z-[90] flex items-center justify-center bg-[#18110C]/62 p-4 backdrop-blur-md"
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-[#18110C]/62 p-2 backdrop-blur-md sm:p-4"
             onClick={() => {
-              if (!batchUploadProgress) setEditing(null);
+              if (!batchUploadProgress && !videoConvertProgress) setEditing(null);
             }}
           >
             <form
               onSubmit={handleSubmit}
               onClick={(e) => e.stopPropagation()}
-              className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-[26px] border border-[#E7DAC7] bg-[#FAF5EC] text-[#241A13] shadow-2xl"
+              className="flex max-h-[94dvh] w-full max-w-4xl flex-col overflow-hidden rounded-[22px] border border-[#E7DAC7] bg-[#FAF5EC] text-[#241A13] shadow-2xl sm:max-h-[92vh] sm:rounded-[26px]"
             >
               {/* Modal Header */}
-              <div className="flex shrink-0 items-center justify-between border-b border-[#4A2E1B]/12 bg-[#F4ECE0] px-6 py-4">
+              <div className="flex shrink-0 items-center justify-between border-b border-[#4A2E1B]/12 bg-[#F4ECE0] px-4 py-3.5 sm:px-6 sm:py-4">
                 <div className="flex items-center gap-2">
                   <Disc3 className="h-4 w-4 text-[#4A2E1B]" />
-                  <h2 className="font-serif text-2xl text-[#241A13]">
+                  <h2 className="font-serif text-xl text-[#241A13] sm:text-2xl">
                     {editing.id ? 'Edit Koleksi Vinyl' : 'Tambah Koleksi Baru'}
                   </h2>
                 </div>
                 <button
                   type="button"
-                  disabled={Boolean(batchUploadProgress)}
+                  disabled={Boolean(batchUploadProgress || videoConvertProgress)}
                   onClick={() => setEditing(null)}
                   className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/15 bg-[#FAF5EC] text-[#4A2E1B] hover:bg-white disabled:opacity-40"
                 >
@@ -1369,8 +1586,8 @@ export default function VinylLibraryTab({
               </div>
 
               {/* Modal Scrollable Form Body */}
-              <div className="orihour-scroll grid flex-1 grid-cols-1 gap-6 overflow-y-auto p-6 lg:grid-cols-12">
-                {/* Left Column: Cover Art + Disc Preview + Main Audio + Audio Enhancer + Snippet Trimmer */}
+              <div className="orihour-scroll grid flex-1 grid-cols-1 gap-5 overflow-y-auto p-4 sm:gap-6 sm:p-6 lg:grid-cols-12">
+                {/* Left Column: Cover Art + Disc Preview + Main Audio + Video->MP3 + Audio Enhancer + Snippet Trimmer */}
                 <div className="space-y-4 lg:col-span-5">
                   <div className="rounded-2xl border border-[#4A2E1B]/12 bg-white/85 p-4">
                     <p className="font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
@@ -1378,7 +1595,7 @@ export default function VinylLibraryTab({
                     </p>
 
                     <div className="mt-3 flex items-center gap-4">
-                      <div className="relative h-32 w-32 shrink-0 overflow-hidden rounded-xl border border-black/12 bg-[#1B140F] shadow-md">
+                      <div className="relative h-28 w-28 shrink-0 overflow-hidden rounded-xl border border-black/12 bg-[#1B140F] shadow-md sm:h-32 sm:w-32">
                         {editing.coverUrl ? (
                           <img
                             src={editing.coverUrl}
@@ -1504,17 +1721,17 @@ export default function VinylLibraryTab({
                     </div>
                   </div>
 
-                  {/* Main Audio MP3 + Audio Enhancer + Draggable Snippet Trimmer */}
+                  {/* Main Audio MP3 + Video-to-MP3 Converter + Audio Enhancer + Snippet Trimmer */}
                   <div className="rounded-2xl border border-[#4A2E1B]/12 bg-white/85 p-4">
                     <p className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
                       <Music2 className="h-3.5 w-3.5" />
                       {isSingleMode
-                        ? 'AUDIO LAGU (MP3) & DURASI PUTAR'
+                        ? 'AUDIO LAGU (MP3 / VIDEO → MP3)'
                         : 'AUDIO UTAMA TURNTABLE (OPSIONAL)'}
                     </p>
                     <p className="mt-1 text-[11px] text-[#6B5442]">
                       {isSingleMode
-                        ? 'Upload MP3, aktifkan Audio Enhancement jika suara kurang jernih, lalu pilih Full Song atau Snippet.'
+                        ? 'Upload MP3 langsung atau pilih file video (MP4/MOV/WebM) untuk dikonversi otomatis ke MP3 192 kbps.'
                         : 'Opsional. Jika dikosongkan, turntable otomatis memutar lagu favorit atau lagu pertama dari daftar track.'}
                     </p>
 
@@ -1525,28 +1742,72 @@ export default function VinylLibraryTab({
                       className="hidden"
                       onChange={handleMainAudioSelect}
                     />
+                    <input
+                      ref={mainVideoInputRef}
+                      type="file"
+                      accept="video/*,.mp4,.mov,.webm,.mkv,.m4v"
+                      className="hidden"
+                      onChange={(e) => void handleMainVideoToMp3(e)}
+                    />
 
-                    <div className="mt-3 flex items-center gap-2">
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        disabled={uploadingAudio}
+                        disabled={uploadingAudio || Boolean(videoConvertProgress)}
                         onClick={() => audioInputRef.current?.click()}
-                        className="inline-flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-[#4A2E1B]/25 bg-[#F2E7D7] px-3 py-2 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#E7D6BE] disabled:opacity-50"
+                        className="inline-flex flex-1 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-[#4A2E1B]/25 bg-[#F2E7D7] px-3 py-2 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#E7D6BE] disabled:opacity-50"
                       >
                         <Upload className="h-3.5 w-3.5" />
-                        <span>{uploadingAudio ? 'Mengupload MP3...' : 'Upload File MP3'}</span>
+                        <span>{uploadingAudio ? 'Mengupload...' : 'Upload MP3'}</span>
                       </button>
+
+                      <button
+                        type="button"
+                        disabled={uploadingAudio || Boolean(videoConvertProgress)}
+                        onClick={() => mainVideoInputRef.current?.click()}
+                        className="inline-flex flex-1 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-[#4A2E1B] px-3 py-2 text-xs font-semibold text-[#FAF5EC] transition hover:bg-[#3A2213] disabled:opacity-50"
+                        title="Konversi file video (MP4, MOV, WebM) menjadi MP3 dan langsung unggah"
+                      >
+                        <Film className="h-3.5 w-3.5" />
+                        <span>Video → MP3</span>
+                      </button>
+
                       {editing.audioUrl && (
                         <button
                           type="button"
+                          disabled={Boolean(videoConvertProgress)}
                           onClick={() => setEditing({ ...editing, audioUrl: '' })}
-                          className="cursor-pointer rounded-xl border border-[#4A2E1B]/18 bg-white px-2.5 py-2 text-xs text-[#6B5442] hover:text-[#6E1D2C]"
+                          className="cursor-pointer rounded-xl border border-[#4A2E1B]/18 bg-white px-2.5 py-2 text-xs text-[#6B5442] hover:text-[#6E1D2C] disabled:opacity-40"
                           title="Hapus file audio"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       )}
                     </div>
+
+                    {/* Live Video-to-MP3 Conversion Progress */}
+                    {videoConvertProgress && (
+                      <div className="mt-3 rounded-xl border border-[#C89B54]/45 bg-[#FFF8EB] p-3 text-xs text-[#3A2213]">
+                        <div className="flex items-center justify-between gap-2 font-semibold">
+                          <span className="inline-flex min-w-0 items-center gap-2">
+                            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[#7A5230]" />
+                            <span className="truncate">{videoConvertProgress.stage}</span>
+                          </span>
+                          <span className="shrink-0 font-mono text-[10.5px] text-[#7A5230]">
+                            {videoConvertProgress.percent}%
+                          </span>
+                        </div>
+                        <p className="mt-0.5 truncate font-mono text-[9.5px] text-[#7A624E]">
+                          {videoConvertProgress.fileName}
+                        </p>
+                        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#4A2E1B]/12">
+                          <div
+                            className="h-full rounded-full bg-[#4A2E1B] transition-[width] duration-150"
+                            style={{ width: `${Math.max(5, videoConvertProgress.percent)}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
 
                     {editing.audioUrl && editing.clipMode === 'full' && (
                       <audio
@@ -1585,7 +1846,7 @@ export default function VinylLibraryTab({
                             key={opt.id}
                             type="button"
                             onClick={() => setEditing({ ...editing, clipMode: opt.id })}
-                            className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition ${
+                            className={`cursor-pointer whitespace-nowrap rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
                               editing.clipMode === opt.id
                                 ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
                                 : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#F5ECE0]'
@@ -1633,7 +1894,7 @@ export default function VinylLibraryTab({
                           key={rt}
                           type="button"
                           onClick={() => handleReleaseTypeChange(rt)}
-                          className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition ${
+                          className={`cursor-pointer whitespace-nowrap rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
                             editing.releaseType === rt
                               ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC] shadow-xs'
                               : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#FAF5EC]'
@@ -1662,11 +1923,11 @@ export default function VinylLibraryTab({
                                 : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#FAF5EC]'
                             }`}
                           >
-                            <span className="text-xs font-semibold whitespace-nowrap">
+                            <span className="whitespace-nowrap text-xs font-semibold">
                               1 Lagu
                             </span>
                             <span
-                              className={`mt-0.5 font-mono text-[9.5px] whitespace-nowrap ${
+                              className={`mt-0.5 whitespace-nowrap font-mono text-[9.5px] ${
                                 editing.singleOrMulti === 'single'
                                   ? 'text-[#E8D7BE]'
                                   : 'text-[#8A7360]'
@@ -1687,11 +1948,11 @@ export default function VinylLibraryTab({
                                 : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#FAF5EC]'
                             }`}
                           >
-                            <span className="text-xs font-semibold whitespace-nowrap">
+                            <span className="whitespace-nowrap text-xs font-semibold">
                               Banyak Lagu
                             </span>
                             <span
-                              className={`mt-0.5 font-mono text-[9.5px] whitespace-nowrap ${
+                              className={`mt-0.5 whitespace-nowrap font-mono text-[9.5px] ${
                                 editing.singleOrMulti === 'multi'
                                   ? 'text-[#E8D7BE]'
                                   : 'text-[#8A7360]'
@@ -1750,7 +2011,7 @@ export default function VinylLibraryTab({
                     </div>
                   </div>
 
-                  {/* Row 2: Strictly Aligned Metadata Inputs & Dropdown (Same Label Height + Same Control Height) */}
+                  {/* Row 2: Strictly Aligned Metadata Inputs & Dropdown */}
                   <div className="grid grid-cols-2 items-end gap-3 sm:grid-cols-3">
                     {isSingleMode && (
                       <div className="col-span-2 flex flex-col gap-1 sm:col-span-1">
@@ -1964,7 +2225,7 @@ export default function VinylLibraryTab({
                         </datalist>
                       </div>
 
-                      {/* Tracklist Builder + Batch Folder / ZIP / Multi-MP3 Upload */}
+                      {/* Tracklist Builder + Folder / ZIP / Video->MP3 Batch Upload */}
                       <div className="rounded-2xl border border-[#4A2E1B]/15 bg-white/85 p-4">
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div>
@@ -1973,7 +2234,7 @@ export default function VinylLibraryTab({
                               DAFTAR LAGU ({editing.tracks.length} TRACK)
                             </p>
                             <p className="mt-0.5 text-[11px] text-[#735D4B]">
-                              Upload folder atau file .ZIP kumpulan lagu untuk menangkap judul &amp; MP3 otomatis (judul tetap bisa diedit).
+                              Upload folder, file .ZIP, multi-MP3, atau konversi file video langsung ke MP3 otomatis.
                             </p>
                           </div>
 
@@ -1992,45 +2253,64 @@ export default function VinylLibraryTab({
                             className="hidden"
                             onChange={(e) => void handleBatchAudioSelection(e)}
                           />
+                          <input
+                            ref={batchVideoInputRef}
+                            type="file"
+                            multiple
+                            accept="video/*,.mp4,.mov,.webm,.mkv,.m4v"
+                            className="hidden"
+                            onChange={(e) => void handleBatchVideoToMp3(e)}
+                          />
                         </div>
 
                         {/* Action Bar */}
                         <div className="mt-3 flex flex-wrap items-center gap-1.5">
                           <button
                             type="button"
-                            disabled={Boolean(batchUploadProgress)}
+                            disabled={Boolean(batchUploadProgress || videoConvertProgress)}
                             onClick={() => folderInputRef.current?.click()}
-                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#4A2E1B] px-3 py-1.5 text-[11px] font-semibold whitespace-nowrap text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] disabled:opacity-50"
+                            className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-xl bg-[#4A2E1B] px-3 py-1.5 text-[11px] font-semibold text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] disabled:opacity-50"
                           >
                             <FolderUp className="h-3.5 w-3.5" />
-                            <span>Upload Folder Lagu</span>
+                            <span>Folder Lagu</span>
                           </button>
 
                           <button
                             type="button"
-                            disabled={Boolean(batchUploadProgress)}
+                            disabled={Boolean(batchUploadProgress || videoConvertProgress)}
                             onClick={() => zipOrMultiInputRef.current?.click()}
-                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/25 bg-[#F2E7D7] px-3 py-1.5 text-[11px] font-semibold whitespace-nowrap text-[#4A2E1B] transition hover:bg-[#E7D6BE] disabled:opacity-50"
+                            className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-xl border border-[#4A2E1B]/25 bg-[#F2E7D7] px-3 py-1.5 text-[11px] font-semibold text-[#4A2E1B] transition hover:bg-[#E7D6BE] disabled:opacity-50"
                           >
                             <FileArchive className="h-3.5 w-3.5" />
-                            <span>Upload ZIP / Multi-MP3</span>
+                            <span>ZIP / Multi-MP3</span>
                           </button>
 
                           <button
                             type="button"
-                            disabled={Boolean(batchUploadProgress)}
+                            disabled={Boolean(batchUploadProgress || videoConvertProgress)}
+                            onClick={() => batchVideoInputRef.current?.click()}
+                            className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-xl border border-[#4A2E1B]/25 bg-[#FFF6E6] px-3 py-1.5 text-[11px] font-semibold text-[#4A2E1B] transition hover:bg-[#F2E2C4] disabled:opacity-50"
+                            title="Pilih satu atau beberapa file video untuk dikonversi otomatis ke MP3"
+                          >
+                            <Film className="h-3.5 w-3.5" />
+                            <span>Video → MP3</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={Boolean(batchUploadProgress || videoConvertProgress)}
                             onClick={handleAddTrackRow}
-                            className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-1.5 text-[11px] font-semibold whitespace-nowrap text-[#4A2E1B] hover:bg-[#FAF5EC] disabled:opacity-50"
+                            className="inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#FAF5EC] disabled:opacity-50"
                           >
                             <Plus className="h-3.5 w-3.5" />
-                            <span>Tambah Manual</span>
+                            <span>Manual</span>
                           </button>
 
                           {editing.tracks.length > 0 && (
                             <button
                               type="button"
                               onClick={toggleSelectAllTracks}
-                              className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-[#4A2E1B]/20 bg-[#FAF5EC] px-2.5 py-1.5 text-[11px] font-semibold whitespace-nowrap text-[#4A2E1B] hover:bg-[#EFE4D3]"
+                              className="inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-xl border border-[#4A2E1B]/20 bg-[#FAF5EC] px-2.5 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#EFE4D3]"
                             >
                               {allTracksSelected ? (
                                 <CheckSquare className="h-3 w-3" />
@@ -2045,7 +2325,7 @@ export default function VinylLibraryTab({
                             <button
                               type="button"
                               onClick={requestRemoveSelectedTracks}
-                              className="inline-flex cursor-pointer items-center gap-1 rounded-xl bg-[#6E1D2C] px-2.5 py-1.5 text-[11px] font-semibold whitespace-nowrap text-[#FAF5EC] hover:bg-[#571622]"
+                              className="inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-xl bg-[#6E1D2C] px-2.5 py-1.5 text-[11px] font-semibold text-[#FAF5EC] hover:bg-[#571622]"
                             >
                               <Trash2 className="h-3 w-3" />
                               <span>Hapus ({selectedTrackIds.size})</span>
@@ -2066,7 +2346,7 @@ export default function VinylLibraryTab({
                                   key={preset.id}
                                   type="button"
                                   onClick={() => handleApplyEnhanceToAllTracks(preset.id)}
-                                  className="cursor-pointer rounded-full border border-[#4A2E1B]/18 bg-white px-2 py-0.5 font-mono text-[9.5px] font-semibold whitespace-nowrap text-[#4A2E1B] transition hover:bg-[#4A2E1B] hover:text-[#FAF5EC]"
+                                  className="cursor-pointer whitespace-nowrap rounded-full border border-[#4A2E1B]/18 bg-white px-2 py-0.5 font-mono text-[9.5px] font-semibold text-[#4A2E1B] transition hover:bg-[#4A2E1B] hover:text-[#FAF5EC]"
                                   title={preset.description}
                                 >
                                   {preset.shortLabel}
@@ -2076,14 +2356,14 @@ export default function VinylLibraryTab({
                           </div>
                         )}
 
-                        {/* Live Batch Upload Progress Indicator */}
+                        {/* Live Batch Upload / Video Conversion Progress Indicator */}
                         {batchUploadProgress && (
                           <div className="mt-3 rounded-xl border border-[#C89B54]/45 bg-[#FFF8EB] p-3 text-xs text-[#3A2213]">
                             <div className="flex items-center justify-between gap-2 font-semibold">
                               <span className="inline-flex min-w-0 items-center gap-2">
                                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[#7A5230]" />
                                 <span className="truncate">
-                                  Mengunggah: {batchUploadProgress.currentName}
+                                  {batchUploadProgress.currentName}
                                 </span>
                               </span>
                               <span className="shrink-0 font-mono text-[10.5px] text-[#7A5230]">
@@ -2095,7 +2375,7 @@ export default function VinylLibraryTab({
                                 className="h-full rounded-full bg-[#4A2E1B] transition-[width] duration-200"
                                 style={{
                                   width: `${Math.max(
-                                    6,
+                                    8,
                                     Math.round(
                                       (batchUploadProgress.done /
                                         Math.max(1, batchUploadProgress.total)) *
@@ -2111,7 +2391,7 @@ export default function VinylLibraryTab({
                         <div className="mt-3 space-y-2.5">
                           {editing.tracks.length === 0 ? (
                             <p className="rounded-xl border border-dashed border-[#4A2E1B]/20 bg-[#FAF5EC] py-4 text-center text-xs text-[#8A7360]">
-                              Belum ada lagu di daftar. Upload folder/ZIP kumpulan lagu atau klik &ldquo;Tambah Manual&rdquo;.
+                              Belum ada lagu di daftar. Upload folder/ZIP/Video atau klik &ldquo;Manual&rdquo;.
                             </p>
                           ) : (
                             editing.tracks.map((trk, idx) => {
@@ -2143,7 +2423,7 @@ export default function VinylLibraryTab({
                                         updateTrackRow(trk.id, { title: e.target.value })
                                       }
                                       placeholder={`Judul lagu #${idx + 1}`}
-                                      className="min-w-[140px] flex-1 rounded-lg border border-[#4A2E1B]/15 bg-white px-2.5 py-1.5 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                                      className="min-w-[120px] flex-1 rounded-lg border border-[#4A2E1B]/15 bg-white px-2.5 py-1.5 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                                     />
                                     <input
                                       type="text"
@@ -2164,11 +2444,21 @@ export default function VinylLibraryTab({
                                       className="hidden"
                                       onChange={(e) => handleTrackAudioSelect(trk.id, e)}
                                     />
+                                    <input
+                                      ref={(el) => {
+                                        trackVideoRefs.current[trk.id] = el;
+                                      }}
+                                      type="file"
+                                      accept="video/*,.mp4,.mov,.webm,.mkv,.m4v"
+                                      className="hidden"
+                                      onChange={(e) => void handleTrackVideoToMp3(trk.id, e)}
+                                    />
+
                                     <button
                                       type="button"
                                       disabled={uploadingTrackId === trk.id}
                                       onClick={() => trackAudioRefs.current[trk.id]?.click()}
-                                      className={`inline-flex cursor-pointer items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold whitespace-nowrap disabled:opacity-50 ${
+                                      className={`inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg border px-2 py-1.5 text-[11px] font-semibold disabled:opacity-50 ${
                                         trk.audioUrl
                                           ? 'border-emerald-700/25 bg-emerald-500/10 text-emerald-900 hover:bg-emerald-500/20'
                                           : 'border-[#4A2E1B]/20 bg-white text-[#4A2E1B] hover:bg-[#EFE5D5]'
@@ -2177,11 +2467,22 @@ export default function VinylLibraryTab({
                                       <Upload className="h-3 w-3" />
                                       <span>
                                         {uploadingTrackId === trk.id
-                                          ? 'Upload...'
+                                          ? '...'
                                           : trk.audioUrl
-                                          ? 'Ganti MP3'
+                                          ? 'MP3 ✓'
                                           : 'MP3'}
                                       </span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      disabled={uploadingTrackId === trk.id}
+                                      onClick={() => trackVideoRefs.current[trk.id]?.click()}
+                                      className="inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg border border-[#4A2E1B]/20 bg-[#FFF6E6] px-2 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#F2E2C4] disabled:opacity-50"
+                                      title="Konversi video ke MP3 untuk track ini"
+                                    >
+                                      <Film className="h-3 w-3" />
+                                      <span>Video</span>
                                     </button>
 
                                     <button
@@ -2194,7 +2495,7 @@ export default function VinylLibraryTab({
                                     </button>
                                   </div>
 
-                                  <div className="flex flex-wrap items-center justify-between gap-2 pl-8 text-[10.5px]">
+                                  <div className="flex flex-wrap items-center justify-between gap-2 pl-6 text-[10.5px] sm:pl-8">
                                     <ThemedDropdown
                                       value={trk.clipMode || 'full'}
                                       options={CLIP_MODE_OPTIONS}
@@ -2234,7 +2535,7 @@ export default function VinylLibraryTab({
 
                                   {/* Compact Per-Track Audio Enhancer */}
                                   {trk.audioUrl && (
-                                    <div className="pl-8">
+                                    <div className="pl-6 sm:pl-8">
                                       <AudioEnhancerControl
                                         compact
                                         audioUrl={trk.audioUrl}
@@ -2246,7 +2547,7 @@ export default function VinylLibraryTab({
                                   )}
 
                                   {trk.clipMode === 'snippet' && (
-                                    <div className="pl-8">
+                                    <div className="pl-6 sm:pl-8">
                                       <SnippetTrimmer
                                         compact
                                         audioUrl={
@@ -2297,7 +2598,7 @@ export default function VinylLibraryTab({
 
               {/* Error Banner Inside Modal */}
               {errorMsg && (
-                <div className="mx-6 mb-3 flex shrink-0 items-center justify-between gap-2 rounded-xl border border-[#6E1D2C]/25 bg-[#6E1D2C]/10 px-4 py-2.5 text-xs font-semibold text-[#571622]">
+                <div className="mx-4 mb-3 flex shrink-0 items-center justify-between gap-2 rounded-xl border border-[#6E1D2C]/25 bg-[#6E1D2C]/10 px-4 py-2.5 text-xs font-semibold text-[#571622] sm:mx-6">
                   <span className="inline-flex items-center gap-2">
                     <AlertTriangle className="h-4 w-4 shrink-0 text-[#6E1D2C]" />
                     <span>{errorMsg}</span>
@@ -2313,10 +2614,10 @@ export default function VinylLibraryTab({
               )}
 
               {/* Modal Footer */}
-              <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-[#4A2E1B]/12 bg-[#F4ECE0] px-6 py-4">
+              <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-[#4A2E1B]/12 bg-[#F4ECE0] px-4 py-3.5 sm:px-6 sm:py-4">
                 <button
                   type="button"
-                  disabled={Boolean(batchUploadProgress)}
+                  disabled={Boolean(batchUploadProgress || videoConvertProgress)}
                   onClick={() => setEditing(null)}
                   className="cursor-pointer rounded-xl border border-[#4A2E1B]/20 bg-white px-4 py-2 text-xs font-semibold text-[#4A2E1B] hover:bg-[#EFE5D5] disabled:opacity-45"
                 >

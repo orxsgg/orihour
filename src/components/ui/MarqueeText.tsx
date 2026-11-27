@@ -19,8 +19,8 @@ export default function MarqueeText({
   children,
   measureKey,
   className = '',
-  gapPx = 40,
-  speedPxPerSec = 34,
+  gapPx = 36,
+  speedPxPerSec = 32,
 }: MarqueeTextProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLSpanElement>(null);
@@ -34,19 +34,25 @@ export default function MarqueeText({
     const textEl = textRef.current;
     if (!container || !textEl) return;
 
-    const availableWidth = Math.max(0, container.clientWidth - 4);
-    const textWidth = Math.ceil(textEl.getBoundingClientRect().width);
-    const overflows = textWidth > availableWidth + 2;
+    const containerWidth = container.clientWidth;
+    if (containerWidth <= 0) return;
 
-    setIsOverflowing(overflows);
+    const textWidth = Math.ceil(textEl.scrollWidth);
+    const overflows = textWidth > containerWidth + 3;
+
     if (overflows) {
       const dist = textWidth + gapPx;
+      setIsOverflowing(true);
       setDistancePx(dist);
       setDurationSec(Math.max(7, Number((dist / speedPxPerSec).toFixed(2))));
+    } else {
+      setIsOverflowing(false);
     }
   }, [gapPx, speedPxPerSec]);
 
   useEffect(() => {
+    // Reset first so container measures cleanly without duplicate span
+    setIsOverflowing(false);
     const raf = window.requestAnimationFrame(measure);
 
     let ro: ResizeObserver | null = null;
@@ -77,9 +83,9 @@ export default function MarqueeText({
   const maskStyle: React.CSSProperties | undefined = isOverflowing
     ? {
         maskImage:
-          'linear-gradient(to right, transparent 0px, black 4px, black calc(100% - 18px), transparent 100%)',
+          'linear-gradient(to right, transparent 0px, black 6px, black calc(100% - 16px), transparent 100%)',
         WebkitMaskImage:
-          'linear-gradient(to right, transparent 0px, black 4px, black calc(100% - 18px), transparent 100%)',
+          'linear-gradient(to right, transparent 0px, black 6px, black calc(100% - 16px), transparent 100%)',
       }
     : undefined;
 
@@ -94,7 +100,7 @@ export default function MarqueeText({
     <div
       ref={containerRef}
       style={maskStyle}
-      className={`relative -ml-1 min-w-0 max-w-full overflow-hidden pl-1 ${className}`}
+      className={`relative block w-full min-w-0 overflow-hidden ${className}`}
     >
       <div
         key={isOverflowing ? `mq-${measureKey}` : 'static'}

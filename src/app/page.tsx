@@ -117,6 +117,7 @@ export default function OrihourHomePage() {
 
   const [cameraFocus, setCameraFocus] = useState<CameraFocusTarget>('ENTRY');
   const [weather, setWeather] = useState<WeatherType>('CLEAR');
+  const [weatherBadgeText, setWeatherBadgeText] = useState<string | null>(null);
   const hasManualWeather = useRef(false);
   const weatherRef = useRef<WeatherType>('CLEAR');
   const lofiModeRef = useRef(false);
@@ -135,6 +136,34 @@ export default function OrihourHomePage() {
   const [linerModalOpen, setLinerModalOpen] = useState(false);
   const [pinboardOpen, setPinboardOpen] = useState(false);
   const [hoverLabel, setHoverLabel] = useState<string | null>(null);
+
+  const applyWeatherResponse = useCallback(
+    (data: {
+      weather?: WeatherType;
+      source?: string;
+      locationName?: string;
+      description?: string;
+      tempC?: number | null;
+    } | null) => {
+      if (!data || hasManualWeather.current) return;
+      const nextWeather = data.weather;
+      if (
+        nextWeather === 'CLEAR' ||
+        nextWeather === 'CLOUDY' ||
+        nextWeather === 'RAIN' ||
+        nextWeather === 'BREEZY'
+      ) {
+        setWeather(nextWeather);
+        const parts: string[] = [];
+        if (data.source) parts.push(data.source);
+        if (data.locationName) parts.push(data.locationName);
+        if (data.description) parts.push(data.description);
+        if (typeof data.tempC === 'number') parts.push(`${Math.round(data.tempC)}°C`);
+        setWeatherBadgeText(parts.length > 0 ? parts.join(' · ') : null);
+      }
+    },
+    []
+  );
 
   const openLofi = useCallback((source: 'ENTRY' | 'ROOM') => {
     if (lofiCloseTimerRef.current !== null) {
@@ -292,30 +321,49 @@ export default function OrihourHomePage() {
         if (active) setDataReady(true);
       });
 
-    fetch('/api/weather')
+    // 1) Fast initial IP-based weather (BMKG for ID / Open-Meteo global)
+    fetch('/api/weather', { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (!active || hasManualWeather.current) return;
-        const nextWeather = data?.weather as WeatherType | undefined;
-        if (
-          nextWeather === 'CLEAR' ||
-          nextWeather === 'CLOUDY' ||
-          nextWeather === 'RAIN' ||
-          nextWeather === 'BREEZY'
-        ) {
-          setWeather(nextWeather);
-        }
+        if (active) applyWeatherResponse(data);
       })
-      .catch(() => {
-        // Fallback silently to CLEAR
-      });
+      .catch(() => {});
+
+    // 2) Refine with exact browser geolocation if permitted (solves ISP IP routing mismatch like Kasongan vs Palangka Raya/Jakarta)
+    if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          if (!active || hasManualWeather.current) return;
+          const { latitude, longitude } = pos.coords;
+          fetch(
+            `/api/weather?lat=${encodeURIComponent(latitude.toFixed(5))}&lon=${encodeURIComponent(
+              longitude.toFixed(5)
+            )}`,
+            { cache: 'no-store' }
+          )
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => {
+              if (active) applyWeatherResponse(data);
+            })
+            .catch(() => {});
+        },
+        () => {
+          // Silently keep IP-based weather when user denies or GPS unavailable
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: 6500,
+          maximumAge: 10 * 60 * 1000,
+        }
+      );
+    }
 
     return () => {
       active = false;
       window.clearTimeout(dataSafetyTimer);
       window.clearTimeout(sceneSafetyTimer);
     };
-  }, []);
+  }, [applyWeatherResponse]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -399,12 +447,17 @@ export default function OrihourHomePage() {
   const handleManualWeatherChange = useCallback((next: WeatherType) => {
     hasManualWeather.current = true;
     setWeather(next);
+    setWeatherBadgeText(`Manual · ${next}`);
   }, []);
 
   const handleCycleWeather = useCallback(() => {
     hasManualWeather.current = true;
     const order: WeatherType[] = ['CLEAR', 'CLOUDY', 'RAIN', 'BREEZY'];
-    setWeather((prev) => order[(order.indexOf(prev) + 1) % order.length]);
+    setWeather((prev) => {
+      const next = order[(order.indexOf(prev) + 1) % order.length];
+      setWeatherBadgeText(`Manual · ${next}`);
+      return next;
+    });
   }, []);
 
   const startTurntablePlayback = useCallback(
@@ -424,7 +477,6 @@ export default function OrihourHomePage() {
         vinyl,
         (ratio) => setProgressRatio(ratio),
         () => {
-          // Auto-advance to the next track when release has multiple tracks
           if (hasMultipleTracks(vinyl) && resolvedTrack) {
             const tracks = vinyl.tracks || [];
             const currentIdx = tracks.findIndex((t) => t.id === resolvedTrack.id);
@@ -673,9 +725,9 @@ export default function OrihourHomePage() {
   };
 
   return (
-    <main className="relative h-screen w-screen overflow-hidden bg-[#120E0B] select-none">
+    <main className="relative h-[100dvh] w-screen overflow-hidden bg-[#120E0B] select-none">
       {/* Persistent 3D Canvas — stays mounted during Lo-Fi mode so return transition is instant & smooth */}
-      <div className="fixed inset-0 z-0 h-screen w-screen">
+      <div className="fixed inset-0 z-0 h-[100dvh] w-screen">
         {dataReady && webglSupported && (
           <OrihourCanvas
             config={roomConfig}
@@ -769,6 +821,7 @@ export default function OrihourHomePage() {
             progressRatio={progressRatio}
             cameraFocus={cameraFocus}
             weather={weather}
+            weatherBadgeText={weatherBadgeText}
             lampOn={lampOn}
             soundEnabled={soundEnabled}
             hourDecimal={hourDecimal}
@@ -866,10 +919,10 @@ export default function OrihourHomePage() {
         </>
       )}
 
-      {/* Smooth Cross-Fade Lo-Fi Catalog Overlay */}
+      {/* Smooth Cross-Fade Lo-Fi Catalog Overlay — Outer shell overflow-hidden so ONLY middle list scrolls */}
       {lofiMounted && (
         <div
-          className={`fixed inset-0 z-40 overflow-y-auto orihour-scroll select-text transition-opacity duration-300 ease-out ${
+          className={`fixed inset-0 z-40 overflow-hidden select-text transition-opacity duration-300 ease-out ${
             lofiVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
           }`}
         >

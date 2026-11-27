@@ -14,6 +14,7 @@ import {
   Pin,
   ChevronRight,
   Settings2,
+  X,
 } from 'lucide-react';
 import {
   CameraFocusTarget,
@@ -33,6 +34,7 @@ interface MinimalHudProps {
   progressRatio: number;
   cameraFocus: CameraFocusTarget;
   weather: WeatherType;
+  weatherBadgeText?: string | null;
   lampOn: boolean;
   soundEnabled: boolean;
   hourDecimal: number;
@@ -72,7 +74,8 @@ const WEATHER_ORDER: WeatherType[] = ['CLEAR', 'CLOUDY', 'RAIN', 'BREEZY'];
 
 export default function MinimalHud(props: MinimalHudProps) {
   const [showMixer, setShowMixer] = useState(false);
-  const [controlsOpen, setControlsOpen] = useState(true);
+  // Default closed when entering the 3D room
+  const [controlsOpen, setControlsOpen] = useState(false);
   const [musicVol, setMusicVol] = useState(0.75);
   const [rainVol, setRainVol] = useState(0.35);
   const [crackleVol, setCrackleVol] = useState(0.22);
@@ -103,68 +106,146 @@ export default function MinimalHud(props: MinimalHudProps) {
       props.onPrevTrack &&
       props.onNextTrack
   );
-  const displayTitle = props.activeTrack
-    ? `${props.activeTrack.title} (${props.activeVinyl?.title ?? ''})`
-    : props.activeVinyl?.title ?? '';
-  const marqueeKey = `${props.activeVinyl?.id ?? 'empty'}-${props.activeTrack?.id ?? 'single'}-${displayTitle}-${props.activeVinyl?.artist ?? ''}`;
+
+  // Separated Title (line 1) & Artist (line 2)
+  const titleLine = props.activeVinyl
+    ? props.activeTrack
+      ? props.activeTrack.title
+      : props.activeVinyl.title
+    : 'No Record on Platter';
+
+  const artistLine = props.activeVinyl
+    ? props.activeTrack
+      ? `${props.activeVinyl.artist} · ${props.activeVinyl.title}`
+      : props.activeVinyl.artist
+    : 'Pick from Rack';
+
+  const titleKey = `t-${props.activeVinyl?.id ?? 'empty'}-${props.activeTrack?.id ?? 'single'}-${titleLine}`;
+  const artistKey = `a-${props.activeVinyl?.id ?? 'empty'}-${props.activeTrack?.id ?? 'single'}-${artistLine}`;
+
+  const backLabel =
+    props.cameraFocus === 'NOTES'
+      ? 'PUT DOWN NOTEPAD'
+      : props.cameraFocus === 'WALLET'
+      ? 'CLOSE WALLET'
+      : 'BACK TO DESK';
 
   return (
     <>
-      {/* Top Borderless Editorial Bar */}
-      <header className="pointer-events-none fixed top-0 right-0 left-0 z-20 flex flex-wrap items-center justify-between gap-3 px-6 py-5">
-        <button
-          type="button"
-          onClick={() => props.onChangeFocus('DESK')}
-          className="pointer-events-auto cursor-pointer font-mono text-sm font-bold tracking-[0.22em] text-[#FAF5EC] uppercase drop-shadow-[0_1px_6px_rgba(0,0,0,0.7)] transition hover:text-[#E6C79C]"
-        >
-          ORIHOUR
-        </button>
+      {/* Top Borderless Editorial Bar — Responsive on Mobile & Desktop */}
+      <header className="pointer-events-none fixed top-0 right-0 left-0 z-20 px-4 py-3.5 sm:px-6 sm:py-5">
+        {/* Desktop (lg+): Single Editorial Row */}
+        <div className="hidden items-center justify-between gap-3 lg:flex">
+          <button
+            type="button"
+            onClick={() => props.onChangeFocus('DESK')}
+            className="pointer-events-auto cursor-pointer bg-gradient-to-b from-[#FFF7E8] via-[#E8C88A] to-[#C89B54] bg-clip-text font-serif text-sm font-semibold tracking-[0.26em] text-transparent uppercase drop-shadow-[0_2px_10px_rgba(0,0,0,0.88)] transition hover:brightness-110"
+          >
+            ORIHOUR
+          </button>
 
-        <nav className="pointer-events-auto flex flex-wrap items-center gap-4 font-mono text-[11px] font-semibold tracking-[0.14em] text-[#FAF5EC]/92 drop-shadow-[0_1px_6px_rgba(0,0,0,0.7)]">
-          {NAV_ITEMS.map((item) => (
+          <nav className="pointer-events-auto flex items-center gap-4 font-mono text-[11px] font-semibold tracking-[0.14em] text-[#FAF5EC]/92 drop-shadow-[0_1px_6px_rgba(0,0,0,0.7)]">
+            {NAV_ITEMS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => props.onChangeFocus(item.id)}
+                className={`cursor-pointer whitespace-nowrap transition hover:text-white ${
+                  props.cameraFocus === item.id
+                    ? 'text-[#E6C79C] underline underline-offset-4'
+                    : ''
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+
+            <span className="h-3 w-px bg-[#FAF5EC]/30" />
+
             <button
-              key={item.id}
               type="button"
-              onClick={() => props.onChangeFocus(item.id)}
-              className={`cursor-pointer transition hover:text-white ${
-                props.cameraFocus === item.id
-                  ? 'text-[#E6C79C] underline underline-offset-4'
-                  : ''
+              onClick={props.onOpenCollection}
+              className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border border-[#FAF5EC]/35 bg-[#2A1A10]/65 px-3 py-1 text-[10.5px] text-[#FAF5EC] backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+            >
+              <Library className="h-3 w-3" />
+              <span>COLLECTION ({props.vinylCount})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={props.onOpenPinboard}
+              className={`inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1 text-[10.5px] backdrop-blur-md transition ${
+                props.cameraFocus === 'PINBOARD'
+                  ? 'border-[#E6C79C] bg-[#4A2E1B] text-[#FAF5EC]'
+                  : 'border-[#FAF5EC]/35 bg-[#2A1A10]/65 text-[#FAF5EC] hover:border-[#E6C79C] hover:bg-[#4A2E1B]'
               }`}
             >
-              {item.label}
+              <Pin className="h-3 w-3" />
+              <span>PINBOARD ({props.postcardCount})</span>
             </button>
-          ))}
+          </nav>
+        </div>
 
-          <span className="h-3 w-px bg-[#FAF5EC]/30" />
+        {/* Mobile & Tablet (< lg): Clean 2-Line Adaptive Bar (No messy multi-row wrap) */}
+        <div className="flex flex-col gap-2 lg:hidden">
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => props.onChangeFocus('DESK')}
+              className="pointer-events-auto cursor-pointer bg-gradient-to-b from-[#FFF7E8] via-[#E8C88A] to-[#C89B54] bg-clip-text font-serif text-sm font-semibold tracking-[0.26em] text-transparent uppercase drop-shadow-[0_2px_10px_rgba(0,0,0,0.88)]"
+            >
+              ORIHOUR
+            </button>
 
-          <button
-            type="button"
-            onClick={props.onOpenCollection}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-[#FAF5EC]/35 bg-[#2A1A10]/65 px-3 py-1 text-[10.5px] text-[#FAF5EC] backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
-          >
-            <Library className="h-3 w-3" />
-            <span>COLLECTION ({props.vinylCount})</span>
-          </button>
+            <div className="pointer-events-auto flex items-center gap-1.5 font-mono text-[10px] font-semibold text-[#FAF5EC]">
+              <button
+                type="button"
+                onClick={props.onOpenCollection}
+                className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-[#FAF5EC]/30 bg-[#2A1A10]/72 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+              >
+                <Library className="h-3 w-3" />
+                <span className="hidden xs:inline">COLLECTION</span>
+                <span>({props.vinylCount})</span>
+              </button>
 
-          <button
-            type="button"
-            onClick={props.onOpenPinboard}
-            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-3 py-1 text-[10.5px] backdrop-blur-md transition ${
-              props.cameraFocus === 'PINBOARD'
-                ? 'border-[#E6C79C] bg-[#4A2E1B] text-[#FAF5EC]'
-                : 'border-[#FAF5EC]/35 bg-[#2A1A10]/65 text-[#FAF5EC] hover:border-[#E6C79C] hover:bg-[#4A2E1B]'
-            }`}
-          >
-            <Pin className="h-3 w-3" />
-            <span>PINBOARD ({props.postcardCount})</span>
-          </button>
-        </nav>
+              <button
+                type="button"
+                onClick={props.onOpenPinboard}
+                className={`inline-flex cursor-pointer items-center gap-1 rounded-full border px-2.5 py-1 backdrop-blur-md transition ${
+                  props.cameraFocus === 'PINBOARD'
+                    ? 'border-[#E6C79C] bg-[#4A2E1B] text-[#FAF5EC]'
+                    : 'border-[#FAF5EC]/30 bg-[#2A1A10]/72 text-[#FAF5EC] hover:border-[#E6C79C] hover:bg-[#4A2E1B]'
+                }`}
+              >
+                <Pin className="h-3 w-3" />
+                <span className="hidden xs:inline">PINBOARD</span>
+                <span>({props.postcardCount})</span>
+              </button>
+            </div>
+          </div>
+
+          <nav className="no-scrollbar pointer-events-auto flex items-center gap-3 overflow-x-auto pb-0.5 font-mono text-[10.5px] font-semibold tracking-[0.13em] text-[#FAF5EC]/92 drop-shadow-[0_1px_6px_rgba(0,0,0,0.75)]">
+            {NAV_ITEMS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => props.onChangeFocus(item.id)}
+                className={`shrink-0 cursor-pointer whitespace-nowrap py-0.5 transition hover:text-white ${
+                  props.cameraFocus === item.id
+                    ? 'text-[#E6C79C] underline underline-offset-4'
+                    : ''
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        </div>
       </header>
 
       {/* Time Scrubber Popover */}
       {props.showTimeScrubber && (
-        <div className="fixed top-16 right-6 z-30 w-72 rounded-xl border border-[#E6C79C]/30 bg-[#1F140D]/88 p-4 text-[#FAF5EC] shadow-2xl backdrop-blur-xl">
+        <div className="fixed top-24 right-4 z-30 w-[calc(100vw-2rem)] max-w-72 rounded-xl border border-[#E6C79C]/30 bg-[#1F140D]/90 p-4 text-[#FAF5EC] shadow-2xl backdrop-blur-xl sm:top-16 sm:right-6">
           <div className="mb-2 flex items-center justify-between">
             <span className="font-mono text-[11px] font-semibold">
               {formattedTime} · {props.phaseLabel}
@@ -199,10 +280,20 @@ export default function MinimalHud(props: MinimalHudProps) {
 
       {/* Ambient Sound Mixer Popover */}
       {showMixer && controlsOpen && (
-        <div className="fixed right-6 bottom-16 z-30 w-64 rounded-xl border border-[#E6C79C]/30 bg-[#1F140D]/90 p-4 text-[#FAF5EC] shadow-2xl backdrop-blur-xl">
-          <p className="mb-3 font-mono text-[11px] font-semibold tracking-wider text-[#E6C79C]">
-            AMBIENT MIXER
-          </p>
+        <div className="fixed right-4 bottom-28 z-30 w-64 rounded-xl border border-[#E6C79C]/30 bg-[#1F140D]/92 p-4 text-[#FAF5EC] shadow-2xl backdrop-blur-xl sm:right-6 md:bottom-16">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="font-mono text-[11px] font-semibold tracking-wider text-[#E6C79C]">
+              AMBIENT MIXER
+            </p>
+            <button
+              type="button"
+              onClick={() => setShowMixer(false)}
+              className="cursor-pointer text-[#FAF5EC]/70 hover:text-white"
+              aria-label="Close mixer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
           <div className="space-y-2.5">
             {[
               {
@@ -243,16 +334,16 @@ export default function MinimalHud(props: MinimalHudProps) {
 
       {/* Subtle Hover Tooltip */}
       {props.hoverLabel && (
-        <div className="pointer-events-none fixed bottom-16 left-1/2 z-30 -translate-x-1/2 rounded-md border border-[#E6C79C]/25 bg-[#1C120C]/85 px-3 py-1 font-mono text-[11px] text-[#FAF5EC] backdrop-blur-md">
+        <div className="pointer-events-none fixed bottom-24 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-md border border-[#E6C79C]/25 bg-[#1C120C]/85 px-3 py-1 font-mono text-[11px] text-[#FAF5EC] backdrop-blur-md sm:bottom-16">
           {props.hoverLabel}
         </div>
       )}
 
       {/* Bottom Corner Micro-Controls */}
-      <footer className="pointer-events-none fixed right-0 bottom-0 left-0 z-20 flex flex-wrap items-end justify-between gap-3 px-6 py-4">
-        {/* Bottom-Left Player with Conditional Smooth Marquee */}
+      <footer className="pointer-events-none fixed right-0 bottom-0 left-0 z-20 flex flex-col-reverse items-stretch justify-between gap-2.5 px-4 py-3.5 sm:flex-row sm:items-end sm:gap-3 sm:px-6 sm:py-4">
+        {/* Bottom-Left Player — Separated Title (Top) & Artist (Bottom) */}
         {showTrackNav ? (
-          <div className="pointer-events-auto flex flex-col gap-1.5 text-[#FAF5EC] drop-shadow-[0_1px_6px_rgba(0,0,0,0.75)]">
+          <div className="pointer-events-auto flex w-full max-w-[300px] flex-col gap-1.5 text-[#FAF5EC] drop-shadow-[0_1px_6px_rgba(0,0,0,0.8)] sm:w-[290px]">
             <div className="flex items-center gap-2.5">
               <div className="flex shrink-0 items-center gap-1.5">
                 <button
@@ -293,23 +384,25 @@ export default function MinimalHud(props: MinimalHudProps) {
               <button
                 type="button"
                 onClick={props.onOpenLinerNotes}
-                className="block max-w-[200px] min-w-0 cursor-pointer overflow-hidden text-left leading-none transition hover:text-[#E6C79C] sm:max-w-[260px]"
+                className="flex min-w-0 flex-1 cursor-pointer flex-col gap-0.5 overflow-hidden text-left transition hover:text-[#E6C79C]"
               >
                 <MarqueeText
-                  measureKey={marqueeKey}
-                  className="font-mono text-[11px] font-semibold tracking-wide text-[#FAF5EC]"
+                  measureKey={titleKey}
+                  className="font-mono text-[11px] leading-tight font-semibold tracking-wide text-[#FAF5EC]"
                 >
-                  {displayTitle}
-                  <span className="font-normal text-[#FAF5EC]/72">
-                    {' '}
-                    - {props.activeVinyl?.artist}
-                  </span>
+                  {titleLine}
+                </MarqueeText>
+                <MarqueeText
+                  measureKey={artistKey}
+                  className="font-mono text-[9.5px] leading-tight font-normal text-[#FAF5EC]/72"
+                >
+                  {artistLine}
                 </MarqueeText>
               </button>
             </div>
 
             {/* Proportional Seekable Bar Directly Underneath Prev / Play-Pause / Next */}
-            <div className="group relative flex h-2 w-60 items-center sm:w-72">
+            <div className="group relative flex h-2 w-full items-center">
               <div className="pointer-events-none h-[2px] w-full overflow-hidden rounded-full bg-[#FAF5EC]/25 transition-all group-hover:h-[3px]">
                 <div
                   className="h-full rounded-full bg-[#E6C79C] transition-[width] duration-75"
@@ -333,7 +426,7 @@ export default function MinimalHud(props: MinimalHudProps) {
             </div>
           </div>
         ) : (
-          <div className="pointer-events-auto flex items-center gap-2.5 text-[#FAF5EC] drop-shadow-[0_1px_6px_rgba(0,0,0,0.75)]">
+          <div className="pointer-events-auto flex w-full max-w-[290px] items-center gap-2.5 text-[#FAF5EC] drop-shadow-[0_1px_6px_rgba(0,0,0,0.8)] sm:w-[270px]">
             <button
               type="button"
               onClick={props.onTogglePlay}
@@ -349,37 +442,33 @@ export default function MinimalHud(props: MinimalHudProps) {
               )}
             </button>
 
-            <div className="flex min-w-0 flex-col justify-center">
+            <div className="flex min-w-0 flex-1 flex-col justify-center">
               <button
                 type="button"
                 onClick={() => {
                   if (hasRecord) props.onOpenLinerNotes();
                   else props.onChangeFocus('CRATE');
                 }}
-                className="block max-w-[220px] min-w-0 cursor-pointer overflow-hidden text-left leading-none transition hover:text-[#E6C79C] sm:max-w-[290px]"
+                className="flex w-full min-w-0 cursor-pointer flex-col gap-0.5 overflow-hidden text-left transition hover:text-[#E6C79C]"
               >
                 <MarqueeText
-                  measureKey={marqueeKey}
-                  className="font-mono text-[11px] font-semibold tracking-wide text-[#FAF5EC]"
+                  measureKey={titleKey}
+                  className={`font-mono text-[11px] leading-tight font-semibold tracking-wide ${
+                    hasRecord ? 'text-[#FAF5EC]' : 'text-[#FAF5EC]/82'
+                  }`}
                 >
-                  {props.activeVinyl ? (
-                    <>
-                      {displayTitle}
-                      <span className="font-normal text-[#FAF5EC]/72">
-                        {' '}
-                        - {props.activeVinyl.artist}
-                      </span>
-                    </>
-                  ) : (
-                    <span className="text-[#FAF5EC]/75">
-                      No Record on Platter · Pick from Rack
-                    </span>
-                  )}
+                  {titleLine}
+                </MarqueeText>
+                <MarqueeText
+                  measureKey={artistKey}
+                  className="font-mono text-[9.5px] leading-tight font-normal text-[#FAF5EC]/68"
+                >
+                  {artistLine}
                 </MarqueeText>
               </button>
 
-              {/* Slim 2px Seekable Bar aligned cleanly under the title */}
-              <div className="group relative mt-1.5 flex h-2 w-44 items-center sm:w-48">
+              {/* Slim 2px Seekable Bar aligned cleanly under the separated title & artist */}
+              <div className="group relative mt-1.5 flex h-2 w-full max-w-[210px] items-center">
                 <div className="pointer-events-none h-[2px] w-full overflow-hidden rounded-full bg-[#FAF5EC]/25 transition-all group-hover:h-[3px]">
                   <div
                     className="h-full rounded-full bg-[#E6C79C] transition-[width] duration-75"
@@ -408,28 +497,97 @@ export default function MinimalHud(props: MinimalHudProps) {
           </div>
         )}
 
-        {/* Bottom-Right: Collapsible Settings Row + Always-visible Back-to-Desk button */}
-        <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2 font-mono text-[10.5px] font-semibold tracking-wider text-[#FAF5EC]">
+        {/* Bottom-Right: Adaptive Controls (Desktop inline bar; Mobile clean floating popover so BACK TO DESK never jumps) */}
+        <div className="pointer-events-auto relative flex items-center justify-end gap-1.5 font-mono text-[10px] font-semibold tracking-wider text-[#FAF5EC] sm:text-[10.5px]">
+          {/* Mobile Popover Panel when OPTIONS is open (< md) */}
+          {controlsOpen && (
+            <div className="absolute right-0 bottom-10 z-30 flex w-60 flex-col gap-1.5 rounded-2xl border border-[#E6C79C]/35 bg-[#1B120C]/92 p-2.5 shadow-2xl backdrop-blur-xl md:hidden">
+              {props.weatherBadgeText && (
+                <p className="truncate px-1.5 font-mono text-[9px] font-medium text-[#E6C79C]/80">
+                  {props.weatherBadgeText}
+                </p>
+              )}
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={props.onToggleTimeScrubber}
+                  className="cursor-pointer rounded-lg border border-[#FAF5EC]/22 bg-[#2A1A10]/75 px-2 py-1.5 text-center transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+                >
+                  {formattedTime} {props.isLiveTime ? 'LIVE' : 'SCRUB'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={nextWeather}
+                  className="cursor-pointer rounded-lg border border-[#FAF5EC]/22 bg-[#2A1A10]/75 px-2 py-1.5 text-center transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+                >
+                  {props.weather}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={props.onToggleLamp}
+                  className="cursor-pointer rounded-lg border border-[#FAF5EC]/22 bg-[#2A1A10]/75 px-2 py-1.5 text-center transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+                >
+                  LAMP {props.lampOn ? 'ON' : 'OFF'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowMixer((prev) => !prev)}
+                  className={`inline-flex cursor-pointer items-center justify-center gap-1 rounded-lg border px-2 py-1.5 transition ${
+                    showMixer
+                      ? 'border-[#E6C79C] bg-[#4A2E1B]'
+                      : 'border-[#FAF5EC]/22 bg-[#2A1A10]/75 hover:border-[#E6C79C] hover:bg-[#4A2E1B]'
+                  }`}
+                >
+                  <SlidersHorizontal className="h-3 w-3" />
+                  <span>MIXER</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={props.onSwitchToLofi}
+                  className="cursor-pointer rounded-lg border border-[#FAF5EC]/22 bg-[#2A1A10]/75 px-2 py-1.5 text-center transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+                >
+                  LO-FI VIEW
+                </button>
+
+                <button
+                  type="button"
+                  onClick={props.onToggleSound}
+                  className="inline-flex cursor-pointer items-center justify-center gap-1 rounded-lg border border-[#FAF5EC]/22 bg-[#2A1A10]/75 px-2 py-1.5 transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+                >
+                  {props.soundEnabled ? (
+                    <Volume2 className="h-3 w-3" />
+                  ) : (
+                    <VolumeX className="h-3 w-3" />
+                  )}
+                  <span>{props.soundEnabled ? 'SOUND ON' : 'MUTED'}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Always-anchored Back-to-Desk button (cleanly stays beside OPTIONS on both Mobile & Desktop) */}
           {props.cameraFocus !== 'DESK' && (
             <button
               type="button"
               onClick={() => props.onChangeFocus('DESK')}
-              className="cursor-pointer rounded-lg border border-[#E6C79C]/45 bg-[#2A1A10]/80 px-2.5 py-1 backdrop-blur-md transition hover:bg-[#4A2E1B]"
+              className="cursor-pointer whitespace-nowrap rounded-lg border border-[#E6C79C]/45 bg-[#2A1A10]/82 px-2.5 py-1.5 backdrop-blur-md transition hover:bg-[#4A2E1B] md:py-1"
             >
-              {props.cameraFocus === 'NOTES'
-                ? 'PUT DOWN NOTEPAD · ESC'
-                : props.cameraFocus === 'WALLET'
-                ? 'CLOSE WALLET · ESC'
-                : 'BACK TO DESK · ESC'}
+              <span>{backLabel}</span>
+              <span className="hidden md:inline"> · ESC</span>
             </button>
           )}
 
+          {/* Desktop Inline Controls Row (md+) */}
           {controlsOpen && (
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="hidden items-center gap-1.5 md:flex">
               <button
                 type="button"
                 onClick={props.onToggleTimeScrubber}
-                className="cursor-pointer rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+                className="cursor-pointer whitespace-nowrap rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
               >
                 {formattedTime} {props.isLiveTime ? 'LIVE' : 'SCRUB'}
               </button>
@@ -437,7 +595,8 @@ export default function MinimalHud(props: MinimalHudProps) {
               <button
                 type="button"
                 onClick={nextWeather}
-                className="cursor-pointer rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+                title={props.weatherBadgeText || 'Click to change weather'}
+                className="cursor-pointer whitespace-nowrap rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
               >
                 {props.weather}
               </button>
@@ -445,7 +604,7 @@ export default function MinimalHud(props: MinimalHudProps) {
               <button
                 type="button"
                 onClick={props.onToggleLamp}
-                className="cursor-pointer rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+                className="cursor-pointer whitespace-nowrap rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
               >
                 LAMP {props.lampOn ? 'ON' : 'OFF'}
               </button>
@@ -466,7 +625,7 @@ export default function MinimalHud(props: MinimalHudProps) {
               <button
                 type="button"
                 onClick={props.onSwitchToLofi}
-                className="cursor-pointer rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+                className="cursor-pointer whitespace-nowrap rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
               >
                 LO-FI
               </button>
@@ -474,7 +633,7 @@ export default function MinimalHud(props: MinimalHudProps) {
               <button
                 type="button"
                 onClick={props.onToggleSound}
-                className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+                className="inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
               >
                 {props.soundEnabled ? (
                   <Volume2 className="h-3.5 w-3.5" />
@@ -486,6 +645,7 @@ export default function MinimalHud(props: MinimalHudProps) {
             </div>
           )}
 
+          {/* Options Toggle Button */}
           <button
             type="button"
             onClick={() => {
@@ -494,11 +654,15 @@ export default function MinimalHud(props: MinimalHudProps) {
                 return !prev;
               });
             }}
-            className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#E6C79C]/40 bg-[#4A2E1B]/85 px-2.5 py-1 text-[#FAF5EC] backdrop-blur-md transition hover:bg-[#3A2213]"
+            className="inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg border border-[#E6C79C]/40 bg-[#4A2E1B]/85 px-2.5 py-1.5 text-[#FAF5EC] backdrop-blur-md transition hover:bg-[#3A2213] md:py-1"
             title={controlsOpen ? 'Hide settings options' : 'Show settings options'}
           >
             {controlsOpen ? (
-              <ChevronRight className="h-3.5 w-3.5" />
+              <>
+                <ChevronRight className="hidden h-3.5 w-3.5 md:block" />
+                <X className="h-3.5 w-3.5 md:hidden" />
+                <span className="md:hidden">CLOSE</span>
+              </>
             ) : (
               <>
                 <Settings2 className="h-3.5 w-3.5" />

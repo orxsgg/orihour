@@ -19,10 +19,20 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Hide scrollbar for sleek horizontal touch strips on mobile */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Smooth conditional marquee for overflowing song titles & artist labels */
 @keyframes orihour-marquee {
   0%,
-  14% {
+  16% {
     transform: translate3d(0, 0, 0);
   }
   100% {

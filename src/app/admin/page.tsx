@@ -334,54 +334,56 @@ export default function OrihourAdminPage() {
 
   return (
     <div
-      className="flex h-screen flex-col overflow-hidden bg-[#F2E9DB] text-[#241A13]"
+      className="flex h-[100dvh] flex-col overflow-hidden bg-[#F2E9DB] text-[#241A13]"
       style={{
         backgroundImage:
           'radial-gradient(circle at 12% 8%, rgba(200, 155, 84, 0.18), transparent 42%), radial-gradient(circle at 90% 92%, rgba(74, 46, 27, 0.12), transparent 46%)',
       }}
     >
-      {/* Fixed Top Curator Admin Header — Never shifts on scroll */}
+      {/* Fixed Top Curator Admin Header — Never shifts or scrolls */}
       <header className="z-30 shrink-0 border-b border-[#E5D7C3] bg-[#FAF5EC]/92 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#4A2E1B] text-[#FAF5EC] shadow-sm">
-              <Disc3 className="h-5 w-5" />
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2.5 px-4 py-3 sm:px-6 sm:py-3.5">
+          <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-[#4A2E1B] text-[#FAF5EC] shadow-sm sm:h-10 sm:w-10">
+              <Disc3 className="h-4 w-4 sm:h-5 sm:w-5" />
             </div>
-            <div>
-              <p className="font-mono text-[10px] font-semibold tracking-[0.2em] text-[#7A5230] uppercase">
+            <div className="min-w-0">
+              <p className="truncate font-mono text-[9.5px] font-semibold tracking-[0.2em] text-[#7A5230] uppercase sm:text-[10px]">
                 CURATOR CONTROL PANEL
               </p>
-              <h1 className="font-serif text-xl leading-tight text-[#241A13]">
+              <h1 className="truncate font-serif text-lg leading-tight text-[#241A13] sm:text-xl">
                 {config.siteName} Admin
               </h1>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
             <button
               type="button"
               disabled={loading}
               onClick={loadRoomData}
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-2 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3] disabled:opacity-50"
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-white px-2.5 py-2 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3] disabled:opacity-50 sm:px-3"
+              title="Sinkronkan data terbaru dari database"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-              <span>Sync</span>
+              <span className="hidden sm:inline">Sync</span>
             </button>
 
             <Link
               href="/"
               target="_blank"
-              className="inline-flex items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-2 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3]"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-white px-2.5 py-2 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3] sm:px-3"
+              title="Buka ruangan 3D di tab baru"
             >
               <ExternalLink className="h-3.5 w-3.5" />
-              <span>Lihat Ruangan 3D</span>
+              <span className="hidden sm:inline">Lihat Ruangan 3D</span>
             </Link>
 
             <button
               type="button"
               disabled={loggingOut}
               onClick={handleLogout}
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#4A2E1B] px-3.5 py-2 text-xs font-semibold text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] disabled:opacity-50"
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#4A2E1B] px-3 py-2 text-xs font-semibold text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] disabled:opacity-50 sm:px-3.5"
             >
               <LogOut className="h-3.5 w-3.5" />
               <span>{loggingOut ? 'Keluar...' : 'Keluar'}</span>
@@ -389,9 +391,9 @@ export default function OrihourAdminPage() {
           </div>
         </div>
 
-        {/* Navigation Tabs */}
+        {/* Navigation Tabs — Sleek horizontal scroll on mobile, wrapped on desktop */}
         <div className="mx-auto max-w-6xl px-4 pb-3 sm:px-6">
-          <nav className="flex flex-wrap items-center gap-1.5">
+          <nav className="no-scrollbar flex items-center gap-1.5 overflow-x-auto sm:flex-wrap sm:overflow-visible">
             {tabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
@@ -400,7 +402,7 @@ export default function OrihourAdminPage() {
                   key={tab.id}
                   type="button"
                   onClick={() => setActiveTab(tab.id)}
-                  className={`inline-flex cursor-pointer items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
+                  className={`inline-flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-xl border px-3 py-1.5 text-xs font-semibold transition sm:px-3.5 sm:py-2 ${
                     isActive
                       ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC] shadow-sm'
                       : 'border-[#4A2E1B]/15 bg-white/80 text-[#5C4432] hover:border-[#4A2E1B]/35 hover:bg-white'
@@ -428,7 +430,7 @@ export default function OrihourAdminPage() {
 
       {/* Internal Scrollable Tab Content Area */}
       <div className="orihour-scroll flex-1 overflow-y-auto [scrollbar-gutter:stable]">
-        <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
+        <main className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-6">
           {errorMsg && (
             <div className="mb-5 flex items-center gap-2.5 rounded-2xl border border-[#4A2E1B]/30 bg-[#4A2E1B]/10 px-4 py-3 text-xs font-semibold text-[#3A2213]">
               <AlertTriangle className="h-4 w-4 shrink-0 text-[#7A5230]" />
