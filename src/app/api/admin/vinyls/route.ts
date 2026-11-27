@@ -7,6 +7,7 @@ import { formatGenres, parseGenres } from '@/lib/genreUtils';
 import {
   mapVinylRow,
   sanitizeClipMode,
+  sanitizeFadeSec,
   sanitizeReleaseType,
 } from '@/lib/supabase/mappers';
 import { TrackItem } from '@/types/orihour';
@@ -53,6 +54,8 @@ function sanitizeTracks(raw: unknown): TrackItem[] {
       clipMode: sanitizeClipMode(asOptionalString(item.clipMode)),
       clipStartSec: clipStart,
       clipEndSec: clipEnd,
+      fadeInSec: sanitizeFadeSec(item.fadeInSec),
+      fadeOutSec: sanitizeFadeSec(item.fadeOutSec),
     });
   }
   return out;
@@ -218,6 +221,8 @@ export async function POST(req: NextRequest) {
       clip_mode: sanitizeClipMode(asOptionalString(body.clipMode)),
       clip_start_sec: clipStart,
       clip_end_sec: clipEnd,
+      fade_in_sec: sanitizeFadeSec(body.fadeInSec),
+      fade_out_sec: sanitizeFadeSec(body.fadeOutSec),
       favorite_lyric: cleanText(body.favoriteLyric, 500),
       favorite_song: cleanText(body.favoriteSong, 160),
       tracks,
@@ -322,6 +327,13 @@ export async function PATCH(req: NextRequest) {
       const endSec = Math.max(startSec + 5, Math.round(Number(body.clipEndSec) || 30));
       patch.clip_start_sec = startSec;
       patch.clip_end_sec = endSec;
+    }
+
+    if ('fadeInSec' in body) {
+      patch.fade_in_sec = sanitizeFadeSec(body.fadeInSec);
+    }
+    if ('fadeOutSec' in body) {
+      patch.fade_out_sec = sanitizeFadeSec(body.fadeOutSec);
     }
 
     if ('favoriteLyric' in body) patch.favorite_lyric = cleanText(body.favoriteLyric, 500);

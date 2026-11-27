@@ -27,6 +27,7 @@ import {
   Square,
   Loader2,
   Sparkles,
+  Camera,
 } from 'lucide-react';
 import {
   ClipMode,
@@ -57,6 +58,7 @@ import { getSleeveDataUrl } from '@/components/room-3d/textures';
 import ThemedDropdown, { DropdownOption } from '@/components/ui/ThemedDropdown';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import ImageCropEnhanceModal from './ImageCropEnhanceModal';
+import VideoThumbnailPickerModal from './VideoThumbnailPickerModal';
 import SnippetTrimmer from './SnippetTrimmer';
 import AudioEnhancerControl from './AudioEnhancerControl';
 
@@ -97,6 +99,7 @@ const RACK_SLOT_OPTIONS: DropdownOption[] = [
 
 const CLIP_MODE_OPTIONS: DropdownOption[] = [
   { value: 'full', label: 'Full Song' },
+  { value: 'trimmed', label: 'Potong Ujung' },
   { value: 'snippet', label: 'Sebagian (Snippet)' },
 ];
 
@@ -118,6 +121,8 @@ interface VinylFormState {
   clipMode: ClipMode;
   clipStartSec: number;
   clipEndSec: number;
+  fadeInSec: number;
+  fadeOutSec: number;
   favoriteLyric: string;
   favoriteSong: string;
   tracks: TrackItem[];
@@ -127,6 +132,12 @@ interface VinylFormState {
 
 function isFlexibleReleaseType(rt: ReleaseType): boolean {
   return rt === 'Single' || rt === 'Live Version' || rt === 'Cover';
+}
+
+function clampFadeSec(val: string | number): number {
+  const n = typeof val === 'number' ? val : parseFloat(val);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(30, Math.round(n * 10) / 10);
 }
 
 function createEmptyForm(defaultGenre: string): VinylFormState {
@@ -148,6 +159,8 @@ function createEmptyForm(defaultGenre: string): VinylFormState {
     clipMode: 'full',
     clipStartSec: 0,
     clipEndSec: 30,
+    fadeInSec: 0,
+    fadeOutSec: 0,
     favoriteLyric: '',
     favoriteSong: '',
     tracks: [],
@@ -201,6 +214,9 @@ export default function VinylLibraryTab({
   const [mounted, setMounted] = useState(false);
   const [editing, setEditing] = useState<VinylFormState | null>(null);
   const [cropFile, setCropFile] = useState<File | null>(null);
+  const [videoCoverFile, setVideoCoverFile] = useState<File | null>(null);
+  const [lastVideoFile, setLastVideoFile] = useState<File | null>(null);
+
   const [uploadingCover, setUploadingCover] = useState(false);
   const [uploadingAudio, setUploadingAudio] = useState(false);
   const [uploadingTrackId, setUploadingTrackId] = useState<string | null>(null);
@@ -239,6 +255,7 @@ export default function VinylLibraryTab({
   } | null>(null);
 
   const coverInputRef = useRef<HTMLInputElement>(null);
+  const coverVideoInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
   const mainVideoInputRef = useRef<HTMLInputElement>(null);
   const zipOrMultiInputRef = useRef<HTMLInputElement>(null);
@@ -255,6 +272,8 @@ export default function VinylLibraryTab({
     if (!editing) {
       setSelectedTrackIds(new Set());
       setInlineGenreInput('');
+      setVideoCoverFile(null);
+      setLastVideoFile(null);
       return;
     }
     const prev = document.body.style.overflow;
@@ -459,6 +478,8 @@ export default function VinylLibraryTab({
       clipMode: v.clipMode || 'full',
       clipStartSec: v.clipStartSec ?? 0,
       clipEndSec: v.clipEndSec ?? 30,
+      fadeInSec: v.fadeInSec ?? 0,
+      fadeOutSec: v.fadeOutSec ?? 0,
       favoriteLyric: v.favoriteLyric || '',
       favoriteSong: v.favoriteSong || '',
       tracks: Array.isArray(v.tracks) ? v.tracks : [],
@@ -577,8 +598,10 @@ export default function VinylLibraryTab({
               audioUrl: finalUrl,
               duration: secs ? formatDurationSeconds(secs) : prev.duration,
               clipEndSec:
-                secs && prev.clipMode === 'snippet'
+                secs && (prev.clipMode === 'snippet' || prev.clipMode === 'trimmed')
                   ? Math.min(secs, Math.max(prev.clipStartSec + 10, prev.clipEndSec))
+                  : secs
+                  ? Math.round(secs)
                   : prev.clipEndSec,
             }
           : prev
@@ -595,12 +618,13 @@ export default function VinylLibraryTab({
     }
   };
 
-  // Convert Single Video -> MP3 (192kbps) & Upload to Supabase Storage
+  // Convert Single Video -> MP3 (192kbps) & Upload
   const handleMainVideoToMp3 = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const videoFile = e.target.files?.[0];
     e.target.value = '';
     if (!videoFile || !editing) return;
 
+    setLastVideoFile(videoFile);
     setErrorMsg(null);
     setVideoConvertProgress({
       percent: 5,
@@ -638,12 +662,12 @@ export default function VinylLibraryTab({
               audioUrl: finalUrl,
               duration: durLabel,
               clipEndSec:
-                prev.clipMode === 'snippet'
+                prev.clipMode === 'snippet' || prev.clipMode === 'trimmed'
                   ? Math.min(
                       Math.round(converted.durationSec),
                       Math.max(prev.clipStartSec + 10, prev.clipEndSec)
                     )
-                  : prev.clipEndSec,
+                  : Math.round(converted.durationSec),
             }
           : prev
       );
@@ -667,6 +691,7 @@ export default function VinylLibraryTab({
     const videoList = Array.from(files);
     e.target.value = '';
 
+    if (videoList[0]) setLastVideoFile(videoList[0]);
     setErrorMsg(null);
     const uploadedTracks: TrackItem[] = [];
     let failedCount = 0;
@@ -709,7 +734,9 @@ export default function VinylLibraryTab({
             audioUrl: publicUrl,
             clipMode: 'full',
             clipStartSec: 0,
-            clipEndSec: Math.min(30, Math.max(10, Math.round(converted.durationSec))),
+            clipEndSec: Math.max(10, Math.round(converted.durationSec)),
+            fadeInSec: 0,
+            fadeOutSec: 0,
           });
         } catch {
           failedCount += 1;
@@ -799,7 +826,9 @@ export default function VinylLibraryTab({
             audioUrl: publicUrl,
             clipMode: 'full',
             clipStartSec: 0,
-            clipEndSec: secs ? Math.min(30, Math.max(10, Math.round(secs))) : 30,
+            clipEndSec: secs ? Math.max(10, Math.round(secs)) : 30,
+            fadeInSec: 0,
+            fadeOutSec: 0,
           });
         } catch {
           failedCount += 1;
@@ -865,6 +894,8 @@ export default function VinylLibraryTab({
       clipMode: 'full',
       clipStartSec: 0,
       clipEndSec: 30,
+      fadeInSec: 0,
+      fadeOutSec: 0,
     };
     setEditing({ ...editing, tracks: [...editing.tracks, nextTrack] });
   };
@@ -960,6 +991,7 @@ export default function VinylLibraryTab({
       updateTrackRow(trackId, {
         audioUrl: applyAudioEnhancePreset(publicUrl, existingPreset),
         duration: secs ? formatDurationSeconds(secs) : targetTrack?.duration || '03:30',
+        clipEndSec: secs ? Math.round(secs) : targetTrack?.clipEndSec ?? 30,
       });
     } catch (err) {
       showError(err instanceof Error ? err.message : 'Gagal upload MP3 track.');
@@ -976,6 +1008,7 @@ export default function VinylLibraryTab({
     e.target.value = '';
     if (!videoFile || !editing) return;
 
+    setLastVideoFile(videoFile);
     const targetTrack = editing.tracks.find((t) => t.id === trackId);
     setUploadingTrackId(trackId);
     setBatchUploadProgress({
@@ -1011,6 +1044,7 @@ export default function VinylLibraryTab({
         title: targetTrack?.title?.trim() ? targetTrack.title : converted.suggestedTitle,
         audioUrl: applyAudioEnhancePreset(publicUrl, existingPreset),
         duration: formatDurationSeconds(converted.durationSec),
+        clipEndSec: Math.max(10, Math.round(converted.durationSec)),
       });
     } catch (err) {
       showError(
@@ -1090,6 +1124,8 @@ export default function VinylLibraryTab({
             ...t,
             title: t.title.trim(),
             duration: t.duration.trim() || '03:30',
+            fadeInSec: clampFadeSec(t.fadeInSec ?? 0),
+            fadeOutSec: clampFadeSec(t.fadeOutSec ?? 0),
           }));
 
     const resolvedGenreString = formatGenres(editing.selectedGenres) || 'Indie';
@@ -1098,6 +1134,8 @@ export default function VinylLibraryTab({
     let resolvedClipMode: ClipMode = editing.clipMode;
     let resolvedClipStart = editing.clipStartSec;
     let resolvedClipEnd = editing.clipEndSec;
+    let resolvedFadeIn = clampFadeSec(editing.fadeInSec);
+    let resolvedFadeOut = clampFadeSec(editing.fadeOutSec);
 
     if (!isSingleMode && !resolvedAudioUrl && cleanedTracks.length > 0) {
       const favTrack =
@@ -1113,6 +1151,8 @@ export default function VinylLibraryTab({
         resolvedClipMode = favTrack.clipMode || 'full';
         resolvedClipStart = favTrack.clipStartSec ?? 0;
         resolvedClipEnd = favTrack.clipEndSec ?? 30;
+        resolvedFadeIn = clampFadeSec(favTrack.fadeInSec ?? 0);
+        resolvedFadeOut = clampFadeSec(favTrack.fadeOutSec ?? 0);
       }
     }
 
@@ -1141,6 +1181,8 @@ export default function VinylLibraryTab({
           (Number(resolvedClipStart) || 0) + 5,
           Number(resolvedClipEnd) || 30
         ),
+        fadeInSec: resolvedFadeIn,
+        fadeOutSec: resolvedFadeOut,
         favoriteLyric: isSingleMode ? editing.favoriteLyric.trim() : '',
         favoriteSong: !isSingleMode ? editing.favoriteSong.trim() : '',
         tracks: cleanedTracks,
@@ -1207,6 +1249,33 @@ export default function VinylLibraryTab({
   const hasAnyTrackAudio = Boolean(
     editing?.tracks.some((t) => Boolean(t.audioUrl?.trim()))
   );
+
+  const handleMainClipModeChange = (nextMode: ClipMode) => {
+    setEditing((prev) => {
+      if (!prev) return prev;
+      let nextEnd = prev.clipEndSec;
+      // Saat berpindah ke Potong Ujung, jika batas akhir masih default 30s dan lagu lebih panjang,
+      // otomatis rentangkan ke durasi penuh lagu agar user tinggal potong sedikit ujungnya
+      if (nextMode === 'trimmed') {
+        const durSec = parseDurationToSeconds(prev.duration);
+        if (durSec > 35 && prev.clipStartSec === 0 && prev.clipEndSec <= 30) {
+          nextEnd = durSec;
+        }
+      }
+      return { ...prev, clipMode: nextMode, clipEndSec: nextEnd };
+    });
+  };
+
+  const handleTrackClipModeChange = (trk: TrackItem, nextMode: ClipMode) => {
+    let nextEnd = trk.clipEndSec ?? 30;
+    if (nextMode === 'trimmed') {
+      const durSec = parseDurationToSeconds(trk.duration);
+      if (durSec > 35 && (trk.clipStartSec ?? 0) === 0 && nextEnd <= 30) {
+        nextEnd = durSec;
+      }
+    }
+    updateTrackRow(trk.id, { clipMode: nextMode, clipEndSec: nextEnd });
+  };
 
   return (
     <div className="space-y-5">
@@ -1449,6 +1518,10 @@ export default function VinylLibraryTab({
           const anyTrackEnhanced = Boolean(
             v.tracks?.some((t) => parseAudioEnhancePreset(t.audioUrl) !== 'none')
           );
+          const hasFade =
+            (v.fadeInSec ?? 0) > 0 ||
+            (v.fadeOutSec ?? 0) > 0 ||
+            Boolean(v.tracks?.some((t) => (t.fadeInSec ?? 0) > 0 || (t.fadeOutSec ?? 0) > 0));
 
           return (
             <article
@@ -1493,10 +1566,20 @@ export default function VinylLibraryTab({
                       Enhanced
                     </span>
                   )}
+                  {hasFade && (
+                    <span className="rounded-full bg-[#4A2E1B]/12 px-2 py-0.5 font-mono text-[9px] font-semibold text-[#4A2E1B] uppercase">
+                      FADE
+                    </span>
+                  )}
                   {v.clipMode === 'snippet' && (
                     <span className="rounded-full bg-[#B58A52]/20 px-2 py-0.5 font-mono text-[9px] font-semibold text-[#6E4D1B] uppercase">
                       SEBAGIAN ({formatSecLabel(v.clipStartSec ?? 0)}-
                       {formatSecLabel(v.clipEndSec ?? 30)})
+                    </span>
+                  )}
+                  {v.clipMode === 'trimmed' && (
+                    <span className="rounded-full bg-[#4A2E1B]/10 px-2 py-0.5 font-mono text-[9px] font-semibold text-[#5C4432] uppercase">
+                      POTONG UJUNG
                     </span>
                   )}
                   {isOnTurntable && (
@@ -1587,7 +1670,7 @@ export default function VinylLibraryTab({
 
               {/* Modal Scrollable Form Body */}
               <div className="orihour-scroll grid flex-1 grid-cols-1 gap-5 overflow-y-auto p-4 sm:gap-6 sm:p-6 lg:grid-cols-12">
-                {/* Left Column: Cover Art + Disc Preview + Main Audio + Video->MP3 + Audio Enhancer + Snippet Trimmer */}
+                {/* Left Column: Cover Art + Video Thumbnail Picker + Audio + Fade In/Out + Trimmer */}
                 <div className="space-y-4 lg:col-span-5">
                   <div className="rounded-2xl border border-[#4A2E1B]/12 bg-white/85 p-4">
                     <p className="font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
@@ -1654,19 +1737,43 @@ export default function VinylLibraryTab({
                         if (f) setCropFile(f);
                       }}
                     />
+                    <input
+                      ref={coverVideoInputRef}
+                      type="file"
+                      accept="video/*,.mp4,.mov,.webm,.mkv,.m4v"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        e.target.value = '';
+                        if (f) {
+                          setLastVideoFile(f);
+                          setVideoCoverFile(f);
+                        }
+                      }}
+                    />
 
-                    <div className="mt-3.5 flex flex-wrap gap-2">
+                    <div className="mt-3.5 flex flex-wrap gap-1.5">
                       <button
                         type="button"
                         disabled={uploadingCover}
                         onClick={() => coverInputRef.current?.click()}
-                        className="inline-flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl bg-[#4A2E1B] px-3 py-2 text-xs font-semibold text-[#FAF5EC] transition hover:bg-[#3A2213] disabled:opacity-50"
+                        className="inline-flex flex-1 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-[#4A2E1B] px-3 py-2 text-xs font-semibold text-[#FAF5EC] transition hover:bg-[#3A2213] disabled:opacity-50"
                       >
                         <Upload className="h-3.5 w-3.5" />
-                        <span>
-                          {uploadingCover ? 'Mengupload...' : 'Upload, Crop & Rotasi Cover'}
-                        </span>
+                        <span>{uploadingCover ? 'Mengupload...' : 'Upload Cover'}</span>
                       </button>
+
+                      <button
+                        type="button"
+                        disabled={uploadingCover}
+                        onClick={() => coverVideoInputRef.current?.click()}
+                        className="inline-flex flex-1 cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-[#4A2E1B]/25 bg-[#FFF6E6] px-3 py-2 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#F2E2C4] disabled:opacity-50"
+                        title="Ambil 1 frame dari file video sebagai cover vinyl"
+                      >
+                        <Camera className="h-3.5 w-3.5" />
+                        <span>Dari Video</span>
+                      </button>
+
                       {editing.coverUrl && (
                         <button
                           type="button"
@@ -1678,6 +1785,20 @@ export default function VinylLibraryTab({
                         </button>
                       )}
                     </div>
+
+                    {lastVideoFile && (
+                      <button
+                        type="button"
+                        disabled={uploadingCover}
+                        onClick={() => setVideoCoverFile(lastVideoFile)}
+                        className="mt-2 inline-flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-[#C89B54]/45 bg-[#FFFDF8] px-3 py-1.5 font-mono text-[10px] font-semibold text-[#6E4D1B] transition hover:bg-[#FFF6E6]"
+                      >
+                        <Film className="h-3 w-3 shrink-0" />
+                        <span className="truncate">
+                          Ambil thumbnail dari &ldquo;{lastVideoFile.name}&rdquo;
+                        </span>
+                      </button>
+                    )}
 
                     <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-[#3A2B20]">
                       <input
@@ -1721,7 +1842,7 @@ export default function VinylLibraryTab({
                     </div>
                   </div>
 
-                  {/* Main Audio MP3 + Video-to-MP3 Converter + Audio Enhancer + Snippet Trimmer */}
+                  {/* Main Audio MP3 + Video-to-MP3 + Audio Enhancer + Fade In/Out + 3-Mode Selector */}
                   <div className="rounded-2xl border border-[#4A2E1B]/12 bg-white/85 p-4">
                     <p className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
                       <Music2 className="h-3.5 w-3.5" />
@@ -1829,24 +1950,82 @@ export default function VinylLibraryTab({
                       />
                     )}
 
-                    {/* Full Song vs Snippet Selector */}
+                    {/* Fade In & Fade Out Controls */}
+                    <div className="mt-3.5 border-t border-[#4A2E1B]/10 pt-3">
+                      <span className="inline-flex items-center gap-1 font-mono text-[9.5px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                        <Volume2 className="h-3 w-3" />
+                        Efek Transisi Fade (Detik)
+                      </span>
+                      <div className="mt-1.5 grid grid-cols-2 gap-2">
+                        <div className="flex flex-col gap-1">
+                          <label
+                            htmlFor="vinyl-fade-in"
+                            className="font-mono text-[9px] font-semibold text-[#7A624E] uppercase"
+                          >
+                            Fade In (dtk)
+                          </label>
+                          <input
+                            id="vinyl-fade-in"
+                            type="number"
+                            min={0}
+                            max={30}
+                            step={0.5}
+                            value={editing.fadeInSec}
+                            onChange={(e) =>
+                              setEditing({
+                                ...editing,
+                                fadeInSec: clampFadeSec(e.target.value),
+                              })
+                            }
+                            className="h-[34px] w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-2.5 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                          />
+                        </div>
+
+                        <div className="flex flex-col gap-1">
+                          <label
+                            htmlFor="vinyl-fade-out"
+                            className="font-mono text-[9px] font-semibold text-[#7A624E] uppercase"
+                          >
+                            Fade Out (dtk)
+                          </label>
+                          <input
+                            id="vinyl-fade-out"
+                            type="number"
+                            min={0}
+                            max={30}
+                            step={0.5}
+                            value={editing.fadeOutSec}
+                            onChange={(e) =>
+                              setEditing({
+                                ...editing,
+                                fadeOutSec: clampFadeSec(e.target.value),
+                              })
+                            }
+                            className="h-[34px] w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-2.5 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 3-Option Playback Mode Selector: Full Song / Potong Ujung / Sebagian Lagu */}
                     <div className="mt-3.5 border-t border-[#4A2E1B]/10 pt-3">
                       <span className="inline-flex items-center gap-1 font-mono text-[9.5px] font-semibold tracking-wider text-[#5C4432] uppercase">
                         <Scissors className="h-3 w-3" />
                         Mode Pemutaran Audio
                       </span>
-                      <div className="mt-1.5 grid grid-cols-2 gap-2">
+                      <div className="mt-1.5 grid grid-cols-3 gap-1.5">
                         {(
                           [
                             { id: 'full', label: 'Full Song' },
+                            { id: 'trimmed', label: 'Potong Ujung' },
                             { id: 'snippet', label: 'Sebagian Lagu' },
                           ] as const
                         ).map((opt) => (
                           <button
                             key={opt.id}
                             type="button"
-                            onClick={() => setEditing({ ...editing, clipMode: opt.id })}
-                            className={`cursor-pointer whitespace-nowrap rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                            onClick={() => handleMainClipModeChange(opt.id)}
+                            className={`cursor-pointer whitespace-nowrap rounded-xl border px-2 py-1.5 text-[11px] font-semibold transition ${
                               editing.clipMode === opt.id
                                 ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
                                 : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#F5ECE0]'
@@ -1857,13 +2036,21 @@ export default function VinylLibraryTab({
                         ))}
                       </div>
 
-                      {editing.clipMode === 'snippet' && (
-                        <div className="mt-3">
+                      {editing.clipMode === 'trimmed' && (
+                        <p className="mt-1.5 text-[10.5px] leading-snug text-[#6E5643]">
+                          Memotong awal/akhir audio (misal membuang bunyi tak perlu) — tampil bersih <strong>tanpa tag Snippet</strong> di sisi pengunjung.
+                        </p>
+                      )}
+
+                      {(editing.clipMode === 'snippet' || editing.clipMode === 'trimmed') && (
+                        <div className="mt-2.5">
                           <SnippetTrimmer
                             audioUrl={stripAudioEnhancePreset(editing.audioUrl) || undefined}
                             durationLabel={editing.duration}
                             startSec={editing.clipStartSec}
                             endSec={editing.clipEndSec}
+                            fadeInSec={editing.fadeInSec}
+                            fadeOutSec={editing.fadeOutSec}
                             onChange={(nextStart, nextEnd) =>
                               setEditing((prev) =>
                                 prev
@@ -1882,7 +2069,7 @@ export default function VinylLibraryTab({
                   </div>
                 </div>
 
-                {/* Right Column: Release Type Switch + Metadata + Multi-Genre + Dynamic Fields */}
+                {/* Right Column: Release Type Switch + Metadata + Multi-Genre + Tracklist */}
                 <div className="space-y-4 lg:col-span-7">
                   <div className="rounded-2xl border border-[#4A2E1B]/15 bg-[#F4ECE0]/80 p-3.5">
                     <span className="block font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
@@ -1905,7 +2092,6 @@ export default function VinylLibraryTab({
                       ))}
                     </div>
 
-                    {/* Clean 2-Format Selector for Single, Live Version & Cover */}
                     {isFlexibleReleaseType(editing.releaseType) && (
                       <div className="mt-3 border-t border-[#4A2E1B]/10 pt-3">
                         <span className="block font-mono text-[9.5px] font-semibold tracking-wider text-[#5C4432] uppercase">
@@ -2388,7 +2574,8 @@ export default function VinylLibraryTab({
                           </div>
                         )}
 
-                        <div className="mt-3 space-y-2.5">
+                        {/* Compact Tracklist Rows */}
+                        <div className="mt-3 space-y-2">
                           {editing.tracks.length === 0 ? (
                             <p className="rounded-xl border border-dashed border-[#4A2E1B]/20 bg-[#FAF5EC] py-4 text-center text-xs text-[#8A7360]">
                               Belum ada lagu di daftar. Upload folder/ZIP/Video atau klik &ldquo;Manual&rdquo;.
@@ -2396,16 +2583,20 @@ export default function VinylLibraryTab({
                           ) : (
                             editing.tracks.map((trk, idx) => {
                               const trkSelected = selectedTrackIds.has(trk.id);
+                              const isTrackClipped =
+                                trk.clipMode === 'snippet' || trk.clipMode === 'trimmed';
+
                               return (
                                 <div
                                   key={trk.id}
-                                  className={`space-y-2.5 rounded-xl border p-3 transition ${
+                                  className={`rounded-xl border p-2.5 transition ${
                                     trkSelected
                                       ? 'border-[#4A2E1B] bg-[#F3E8D7]/80'
                                       : 'border-[#4A2E1B]/12 bg-[#FAF5EC]/85'
                                   }`}
                                 >
-                                  <div className="flex flex-wrap items-center gap-2">
+                                  {/* Row 1: Track Title, Duration, MP3/Video Upload & Delete */}
+                                  <div className="flex flex-wrap items-center gap-1.5">
                                     <input
                                       type="checkbox"
                                       checked={trkSelected}
@@ -2423,7 +2614,7 @@ export default function VinylLibraryTab({
                                         updateTrackRow(trk.id, { title: e.target.value })
                                       }
                                       placeholder={`Judul lagu #${idx + 1}`}
-                                      className="min-w-[120px] flex-1 rounded-lg border border-[#4A2E1B]/15 bg-white px-2.5 py-1.5 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                                      className="h-7 min-w-[120px] flex-1 rounded-lg border border-[#4A2E1B]/15 bg-white px-2.5 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                                     />
                                     <input
                                       type="text"
@@ -2432,7 +2623,7 @@ export default function VinylLibraryTab({
                                         updateTrackRow(trk.id, { duration: e.target.value })
                                       }
                                       placeholder="03:30"
-                                      className="w-16 rounded-lg border border-[#4A2E1B]/15 bg-white px-2 py-1.5 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                                      className="h-7 w-14 rounded-lg border border-[#4A2E1B]/15 bg-white px-2 font-mono text-[11px] text-[#241A13] outline-none focus:border-[#4A2E1B]"
                                     />
 
                                     <input
@@ -2458,7 +2649,7 @@ export default function VinylLibraryTab({
                                       type="button"
                                       disabled={uploadingTrackId === trk.id}
                                       onClick={() => trackAudioRefs.current[trk.id]?.click()}
-                                      className={`inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg border px-2 py-1.5 text-[11px] font-semibold disabled:opacity-50 ${
+                                      className={`inline-flex h-7 cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg border px-2 text-[11px] font-semibold disabled:opacity-50 ${
                                         trk.audioUrl
                                           ? 'border-emerald-700/25 bg-emerald-500/10 text-emerald-900 hover:bg-emerald-500/20'
                                           : 'border-[#4A2E1B]/20 bg-white text-[#4A2E1B] hover:bg-[#EFE5D5]'
@@ -2478,7 +2669,7 @@ export default function VinylLibraryTab({
                                       type="button"
                                       disabled={uploadingTrackId === trk.id}
                                       onClick={() => trackVideoRefs.current[trk.id]?.click()}
-                                      className="inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg border border-[#4A2E1B]/20 bg-[#FFF6E6] px-2 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#F2E2C4] disabled:opacity-50"
+                                      className="inline-flex h-7 cursor-pointer items-center gap-1 whitespace-nowrap rounded-lg border border-[#4A2E1B]/20 bg-[#FFF6E6] px-2 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#F2E2C4] disabled:opacity-50"
                                       title="Konversi video ke MP3 untuk track ini"
                                     >
                                       <Film className="h-3 w-3" />
@@ -2488,26 +2679,62 @@ export default function VinylLibraryTab({
                                     <button
                                       type="button"
                                       onClick={() => removeTrackRow(trk.id)}
-                                      className="cursor-pointer rounded-lg p-1.5 text-[#8A7360] hover:bg-[#6E1D2C]/10 hover:text-[#6E1D2C]"
+                                      className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-[#8A7360] hover:bg-[#6E1D2C]/10 hover:text-[#6E1D2C]"
                                       title="Hapus lagu ini"
                                     >
                                       <Trash2 className="h-3.5 w-3.5" />
                                     </button>
                                   </div>
 
-                                  <div className="flex flex-wrap items-center justify-between gap-2 pl-6 text-[10.5px] sm:pl-8">
-                                    <ThemedDropdown
-                                      value={trk.clipMode || 'full'}
-                                      options={CLIP_MODE_OPTIONS}
-                                      onChange={(val) =>
-                                        updateTrackRow(trk.id, {
-                                          clipMode: val as ClipMode,
-                                        })
-                                      }
-                                      ariaLabel={`Mode putar track ${idx + 1}`}
-                                      size="xs"
-                                      className="w-40"
-                                    />
+                                  {/* Row 2 (Compact & Tightly Aligned): Playback Mode + Fade In/Out + Favorite */}
+                                  <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 border-t border-[#4A2E1B]/8 pt-1.5 pl-6 sm:pl-7">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <ThemedDropdown
+                                        value={trk.clipMode || 'full'}
+                                        options={CLIP_MODE_OPTIONS}
+                                        onChange={(val) =>
+                                          handleTrackClipModeChange(trk, val as ClipMode)
+                                        }
+                                        ariaLabel={`Mode putar track ${idx + 1}`}
+                                        size="xs"
+                                        className="w-36"
+                                      />
+
+                                      <div className="inline-flex items-center gap-1.5 rounded-lg border border-[#4A2E1B]/14 bg-white px-2 py-0.5 font-mono text-[10px] text-[#5C4432]">
+                                        <span className="text-[#8A7360]">In</span>
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          max={30}
+                                          step={0.5}
+                                          value={trk.fadeInSec ?? 0}
+                                          onChange={(e) =>
+                                            updateTrackRow(trk.id, {
+                                              fadeInSec: clampFadeSec(e.target.value),
+                                            })
+                                          }
+                                          aria-label={`Fade In track ${idx + 1} dalam detik`}
+                                          className="w-10 bg-transparent text-center font-mono text-[10.5px] font-semibold text-[#241A13] outline-none"
+                                        />
+                                        <span className="text-[#4A2E1B]/25">|</span>
+                                        <span className="text-[#8A7360]">Out</span>
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          max={30}
+                                          step={0.5}
+                                          value={trk.fadeOutSec ?? 0}
+                                          onChange={(e) =>
+                                            updateTrackRow(trk.id, {
+                                              fadeOutSec: clampFadeSec(e.target.value),
+                                            })
+                                          }
+                                          aria-label={`Fade Out track ${idx + 1} dalam detik`}
+                                          className="w-10 bg-transparent text-center font-mono text-[10.5px] font-semibold text-[#241A13] outline-none"
+                                        />
+                                        <span className="text-[9px] text-[#8A7360]">s</span>
+                                      </div>
+                                    </div>
 
                                     {trk.title.trim() && (
                                       <button
@@ -2535,7 +2762,7 @@ export default function VinylLibraryTab({
 
                                   {/* Compact Per-Track Audio Enhancer */}
                                   {trk.audioUrl && (
-                                    <div className="pl-6 sm:pl-8">
+                                    <div className="mt-2 pl-6 sm:pl-7">
                                       <AudioEnhancerControl
                                         compact
                                         audioUrl={trk.audioUrl}
@@ -2546,8 +2773,9 @@ export default function VinylLibraryTab({
                                     </div>
                                   )}
 
-                                  {trk.clipMode === 'snippet' && (
-                                    <div className="pl-6 sm:pl-8">
+                                  {/* Per-Track Trimmer for both 'trimmed' and 'snippet' */}
+                                  {isTrackClipped && (
+                                    <div className="mt-2 pl-6 sm:pl-7">
                                       <SnippetTrimmer
                                         compact
                                         audioUrl={
@@ -2556,6 +2784,8 @@ export default function VinylLibraryTab({
                                         durationLabel={trk.duration}
                                         startSec={trk.clipStartSec ?? 0}
                                         endSec={trk.clipEndSec ?? 30}
+                                        fadeInSec={trk.fadeInSec ?? 0}
+                                        fadeOutSec={trk.fadeOutSec ?? 0}
                                         onChange={(nextStart, nextEnd) =>
                                           updateTrackRow(trk.id, {
                                             clipStartSec: nextStart,
@@ -2636,6 +2866,18 @@ export default function VinylLibraryTab({
           </div>,
           document.body
         )}
+
+      {/* Video Frame Picker Modal -> Hands off captured frame directly to 1:1 Cover Crop Modal */}
+      {editing && (
+        <VideoThumbnailPickerModal
+          file={videoCoverFile}
+          onCancel={() => setVideoCoverFile(null)}
+          onCapture={(capturedImageFile) => {
+            setVideoCoverFile(null);
+            setCropFile(capturedImageFile);
+          }}
+        />
+      )}
 
       {/* Interactive 1:1 Cover Crop, Rotate & Auto-Enhance Modal */}
       {editing && (

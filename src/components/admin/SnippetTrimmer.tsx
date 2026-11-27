@@ -8,6 +8,8 @@ interface SnippetTrimmerProps {
   durationLabel?: string;
   startSec: number;
   endSec: number;
+  fadeInSec?: number;
+  fadeOutSec?: number;
   onChange: (nextStartSec: number, nextEndSec: number) => void;
   compact?: boolean;
 }
@@ -30,6 +32,11 @@ function fmtSec(sec: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function smoothCosine(t: number): number {
+  const clamped = Math.max(0, Math.min(1, t));
+  return 0.5 - 0.5 * Math.cos(clamped * Math.PI);
+}
+
 type DragMode = 'move' | 'start' | 'end' | 'playhead' | null;
 
 export default function SnippetTrimmer({
@@ -37,6 +44,8 @@ export default function SnippetTrimmer({
   durationLabel,
   startSec,
   endSec,
+  fadeInSec = 0,
+  fadeOutSec = 0,
   onChange,
   compact = false,
 }: SnippetTrimmerProps) {
@@ -65,8 +74,18 @@ export default function SnippetTrimmer({
   );
   const spanSec = clampedEnd - clampedStart;
 
-  const rangeRef = useRef({ startSec: clampedStart, endSec: clampedEnd });
-  rangeRef.current = { startSec: clampedStart, endSec: clampedEnd };
+  const rangeRef = useRef({
+    startSec: clampedStart,
+    endSec: clampedEnd,
+    fadeInSec: Math.max(0, Number(fadeInSec) || 0),
+    fadeOutSec: Math.max(0, Number(fadeOutSec) || 0),
+  });
+  rangeRef.current = {
+    startSec: clampedStart,
+    endSec: clampedEnd,
+    fadeInSec: Math.max(0, Number(fadeInSec) || 0),
+    fadeOutSec: Math.max(0, Number(fadeOutSec) || 0),
+  };
 
   const updatePlayhead = (nextSec: number) => {
     const bounded = Math.max(
@@ -75,6 +94,27 @@ export default function SnippetTrimmer({
     );
     playheadRef.current = bounded;
     setPlayheadSec(bounded);
+  };
+
+  const applyPreviewFadeVolume = (el: HTMLAudioElement, curSec: number) => {
+    const { startSec: s, endSec: e, fadeInSec: fiRaw, fadeOutSec: foRaw } = rangeRef.current;
+    if (fiRaw <= 0 && foRaw <= 0) {
+      el.volume = 1;
+      return;
+    }
+    const span = Math.max(0.5, e - s);
+    let fi = fiRaw;
+    let fo = foRaw;
+    if (fi + fo > span) {
+      const scale = span / (fi + fo);
+      fi *= scale;
+      fo *= scale;
+    }
+    const elapsed = Math.max(0, curSec - s);
+    const remaining = Math.max(0, e - curSec);
+    const inMult = fi > 0.02 ? smoothCosine(elapsed / fi) : 1;
+    const outMult = fo > 0.02 ? smoothCosine(remaining / fo) : 1;
+    el.volume = Math.max(0, Math.min(1, Math.min(inMult, outMult)));
   };
 
   useEffect(() => {
@@ -91,7 +131,6 @@ export default function SnippetTrimmer({
     });
   }, [durationLabel, endSec]);
 
-  // Keep playhead within bounds if start/end change externally
   useEffect(() => {
     if (playheadRef.current < clampedStart || playheadRef.current > clampedEnd) {
       updatePlayhead(clampedStart);
@@ -139,6 +178,7 @@ export default function SnippetTrimmer({
       // Ignore seek before metadata loaded
     }
 
+    applyPreviewFadeVolume(audio, clampedFrom);
     updatePlayhead(clampedFrom);
 
     audio
@@ -152,6 +192,7 @@ export default function SnippetTrimmer({
           if (el.currentTime >= curRange.endSec || el.currentTime < curRange.startSec - 0.25) {
             el.currentTime = curRange.startSec;
           }
+          applyPreviewFadeVolume(el, el.currentTime);
           playheadRef.current = el.currentTime;
           setPlayheadSec(el.currentTime);
           rafRef.current = requestAnimationFrame(tick);
@@ -294,6 +335,9 @@ export default function SnippetTrimmer({
   const playheadPct =
     ((boundedPlayhead - clampedStart) / Math.max(0.5, clampedEnd - clampedStart)) * 100;
 
+  const fadeInPct = Math.min(50, ((Math.max(0, fadeInSec) || 0) / Math.max(1, spanSec)) * 100);
+  const fadeOutPct = Math.min(50, ((Math.max(0, fadeOutSec) || 0) / Math.max(1, spanSec)) * 100);
+
   return (
     <div className="rounded-2xl border border-[#4A2E1B]/18 bg-[#FAF5EC] p-3">
       {audioUrl && (
@@ -327,7 +371,11 @@ export default function SnippetTrimmer({
               else startPreviewFrom(playheadRef.current);
             }}
             className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#4A2E1B] text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] disabled:cursor-not-allowed disabled:opacity-40"
-            title={audioUrl ? 'Putar / Jeda dari posisi garis playhead' : 'Upload MP3 dulu untuk preview'}
+            title={
+              audioUrl
+                ? 'Putar / Jeda dari posisi garis playhead (termasuk efek Fade In/Out)'
+                : 'Upload MP3 dulu untuk preview'
+            }
           >
             {isPlaying ? (
               <Pause className="h-3 w-3" />
@@ -341,7 +389,7 @@ export default function SnippetTrimmer({
               type="button"
               onClick={() => startPreviewFrom(clampedStart)}
               className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white text-[#5C4432] transition hover:bg-[#EFE4D3] hover:text-[#241A13]"
-              title="Ulang preview dari titik awal snippet"
+              title="Ulang preview dari titik awal"
             >
               <RotateCcw className="h-3 w-3" />
             </button>
@@ -401,7 +449,7 @@ export default function SnippetTrimmer({
         </div>
       </div>
 
-      {/* Interactive Instagram-Style Waveform & Draggable Highlight Window + Draggable Playhead */}
+      {/* Interactive Waveform & Draggable Highlight Window + Fade Visuals + Draggable Playhead */}
       <div
         ref={trackRef}
         className={`relative mt-3 overflow-hidden rounded-xl border border-[#4A2E1B]/15 bg-[#EFE5D6] select-none ${
@@ -445,7 +493,23 @@ export default function SnippetTrimmer({
             width: `${Math.max(4, widthPct)}%`,
           }}
         >
-          {/* Draggable Vertical Playhead Line (Always visible & scrubbable inside window) */}
+          {/* Visual Fade-In Slope Indicator */}
+          {fadeInPct > 0 && (
+            <div
+              className="pointer-events-none absolute inset-y-0 left-0 bg-gradient-to-r from-[#4A2E1B]/35 to-transparent"
+              style={{ width: `${fadeInPct}%` }}
+            />
+          )}
+
+          {/* Visual Fade-Out Slope Indicator */}
+          {fadeOutPct > 0 && (
+            <div
+              className="pointer-events-none absolute inset-y-0 right-0 bg-gradient-to-l from-[#4A2E1B]/35 to-transparent"
+              style={{ width: `${fadeOutPct}%` }}
+            />
+          )}
+
+          {/* Draggable Vertical Playhead Line */}
           <div
             onPointerDown={(e) => beginDrag('playhead', e)}
             title="Geser garis ini untuk memindahkan posisi preview audio"
@@ -476,7 +540,7 @@ export default function SnippetTrimmer({
         </div>
       </div>
 
-      {/* Dedicated Fine-Grain Playhead Seek Bar for the Selected Snippet Range */}
+      {/* Dedicated Fine-Grain Playhead Seek Bar */}
       {audioUrl && (
         <div className="mt-2.5 flex items-center gap-2">
           <span className="font-mono text-[9px] font-semibold text-[#7A5230]">
@@ -499,7 +563,7 @@ export default function SnippetTrimmer({
               onChange={(e) => handlePlayheadRangeScrub(parseFloat(e.target.value))}
               onPointerUp={() => startPreviewFrom(playheadRef.current)}
               onKeyUp={() => startPreviewFrom(playheadRef.current)}
-              aria-label="Geser posisi preview di dalam snippet"
+              aria-label="Geser posisi preview"
               className="absolute inset-0 h-4 w-full -translate-y-1.5 cursor-pointer opacity-0"
             />
             <span

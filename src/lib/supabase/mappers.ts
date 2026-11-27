@@ -47,6 +47,8 @@ export interface VinylRecordRow {
   clip_mode?: string | null;
   clip_start_sec?: number | null;
   clip_end_sec?: number | null;
+  fade_in_sec?: number | null;
+  fade_out_sec?: number | null;
   favorite_lyric: string;
   favorite_song?: string | null;
   tracks?: unknown;
@@ -93,33 +95,46 @@ export function sanitizeReleaseType(raw?: string | null): ReleaseType {
 }
 
 export function sanitizeClipMode(raw?: string | null): ClipMode {
-  return raw === 'snippet' ? 'snippet' : 'full';
+  if (raw === 'snippet') return 'snippet';
+  if (raw === 'trimmed') return 'trimmed';
+  return 'full';
+}
+
+export function sanitizeFadeSec(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(30, Math.round(n * 10) / 10);
 }
 
 export function sanitizeTracksArray(raw: unknown): TrackItem[] {
   if (!Array.isArray(raw)) return [];
   return raw
-    .slice(0, 40)
+    .slice(0, 60)
     .map((item, idx): TrackItem | null => {
       if (!item || typeof item !== 'object') return null;
       const obj = item as Record<string, unknown>;
-      const title = sanitizePlainText(obj.title, 90);
+      const title = sanitizePlainText(obj.title, 120);
       if (!title) return null;
 
       const clipStart = Math.max(0, Math.round(Number(obj.clipStartSec) || 0));
-      const clipEnd = Math.max(clipStart + 3, Math.round(Number(obj.clipEndSec) || clipStart + 30));
+      const clipEnd = Math.max(
+        clipStart + 3,
+        Math.round(Number(obj.clipEndSec) || clipStart + 30)
+      );
 
       return {
         id:
           typeof obj.id === 'string' && obj.id.trim()
-            ? obj.id.trim().slice(0, 48)
+            ? obj.id.trim().slice(0, 64)
             : `trk-${idx + 1}`,
         title,
-        duration: sanitizePlainText(obj.duration, 12) || '03:30',
+        duration: sanitizePlainText(obj.duration, 16) || '03:30',
         audioUrl: sanitizeSafeUrl(obj.audioUrl) || undefined,
         clipMode: sanitizeClipMode(typeof obj.clipMode === 'string' ? obj.clipMode : 'full'),
         clipStartSec: clipStart,
         clipEndSec: clipEnd,
+        fadeInSec: sanitizeFadeSec(obj.fadeInSec),
+        fadeOutSec: sanitizeFadeSec(obj.fadeOutSec),
       };
     })
     .filter((t): t is TrackItem => Boolean(t));
@@ -148,6 +163,8 @@ export function mapVinylRow(row: VinylRecordRow): VinylRecord {
     clipMode: sanitizeClipMode(row.clip_mode),
     clipStartSec: clipStart,
     clipEndSec: clipEnd,
+    fadeInSec: sanitizeFadeSec(row.fade_in_sec),
+    fadeOutSec: sanitizeFadeSec(row.fade_out_sec),
     favoriteLyric: row.favorite_lyric || '',
     favoriteSong: row.favorite_song || '',
     tracks: sanitizeTracksArray(row.tracks),

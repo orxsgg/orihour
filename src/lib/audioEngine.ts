@@ -1,4 +1,4 @@
-import { TrackItem, VinylRecord, WeatherType } from '@/types/orihour';
+import { ClipMode, TrackItem, VinylRecord, WeatherType } from '@/types/orihour';
 import {
   connectRealtimeAudioEnhancer,
   parseAudioEnhancePreset,
@@ -79,14 +79,21 @@ function createNoiseBuffer(
   return buffer;
 }
 
+function smoothCosineCurve(t: number): number {
+  const clamped = Math.max(0, Math.min(1, t));
+  return 0.5 - 0.5 * Math.cos(clamped * Math.PI);
+}
+
 class OrihourAudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private musicGain: GainNode | null = null;
+  private trackFadeGain: GainNode | null = null;
   private rainGain: GainNode | null = null;
   private crackleGain: GainNode | null = null;
   private rainSource: AudioBufferSourceNode | null = null;
   private crackleSource: AudioBufferSourceNode | null = null;
+  private mediaElementSource: MediaElementAudioSourceNode | null = null;
 
   private soundEnabled = true;
   private musicVol = 0.78;
@@ -99,9 +106,13 @@ class OrihourAudioEngine {
   private currentSourceKey: string | null = null;
   private isPausedState = false;
 
-  private clipMode: 'full' | 'snippet' = 'full';
+  private clipMode: ClipMode = 'full';
   private clipStartSec = 0;
   private clipEndSec = 30;
+  private fadeInSec = 0;
+  private fadeOutSec = 0;
+  private currentFadeMultiplier = 1;
+
   private progressRaf: number | null = null;
   private onProgressCb: ((ratio: number) => void) | null = null;
   private onEndedCb: (() => void) | null = null;
@@ -115,6 +126,10 @@ class OrihourAudioEngine {
   private synthTotalSec = 42;
   private synthVinyl: VinylRecord | null = null;
 
+  private isClippedMode(): boolean {
+    return this.clipMode === 'snippet' || this.clipMode === 'trimmed';
+  }
+
   private ensureContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
 
@@ -127,14 +142,17 @@ class OrihourAudioEngine {
       const ctx = new AudioCtx();
       const master = ctx.createGain();
       const music = ctx.createGain();
+      const trackFade = ctx.createGain();
       const rain = ctx.createGain();
       const crackle = ctx.createGain();
 
       master.gain.value = this.soundEnabled ? 1 : 0;
       music.gain.value = this.musicVol;
+      trackFade.gain.value = 1;
       rain.gain.value = 0;
       crackle.gain.value = this.crackleVol * 0.14;
 
+      trackFade.connect(music);
       music.connect(master);
       rain.connect(master);
       crackle.connect(master);
@@ -143,6 +161,7 @@ class OrihourAudioEngine {
       this.ctx = ctx;
       this.masterGain = master;
       this.musicGain = music;
+      this.trackFadeGain = trackFade;
       this.rainGain = rain;
       this.crackleGain = crackle;
 
@@ -196,6 +215,59 @@ class OrihourAudioEngine {
     }
   }
 
+  private computeFadeMultiplier(curSec: number, durSec: number): number {
+    if (this.fadeInSec <= 0 && this.fadeOutSec <= 0) return 1;
+
+    const clipped = this.isClippedMode();
+    const start = clipped ? Math.max(0, this.clipStartSec) : 0;
+    const end = clipped
+      ? durSec > 0
+        ? Math.min(durSec, Math.max(start + 1, this.clipEndSec))
+        : Math.max(start + 1, this.clipEndSec)
+      : durSec;
+
+    const elapsed = Math.max(0, curSec - start);
+
+    // Metadata belum tersedia di mode full: tetap jalankan fade-in saja dulu
+    if (end <= start) {
+      return this.fadeInSec > 0 ? smoothCosineCurve(elapsed / this.fadeInSec) : 1;
+    }
+
+    const span = Math.max(0.5, end - start);
+    let fi = Math.max(0, this.fadeInSec);
+    let fo = Math.max(0, this.fadeOutSec);
+    if (fi + fo > span) {
+      const scale = span / (fi + fo);
+      fi *= scale;
+      fo *= scale;
+    }
+
+    const remaining = Math.max(0, end - curSec);
+    const inMult = fi > 0.02 ? smoothCosineCurve(elapsed / fi) : 1;
+    const outMult = fo > 0.02 ? smoothCosineCurve(remaining / fo) : 1;
+    return Math.min(inMult, outMult);
+  }
+
+  private applyFadeGain(multiplier: number, immediate = false) {
+    const clamped = Math.max(0, Math.min(1, multiplier));
+    this.currentFadeMultiplier = clamped;
+
+    if (this.audioElRoutedToWebAudio && this.ctx && this.trackFadeGain) {
+      const now = this.ctx.currentTime;
+      if (immediate) {
+        this.trackFadeGain.gain.cancelScheduledValues(now);
+        this.trackFadeGain.gain.setValueAtTime(clamped, now);
+      } else {
+        this.trackFadeGain.gain.setTargetAtTime(clamped, now, 0.025);
+      }
+      return;
+    }
+
+    if (this.audioEl && !this.audioElRoutedToWebAudio) {
+      this.audioEl.volume = (this.soundEnabled ? this.musicVol : 0) * clamped;
+    }
+  }
+
   public unlockAndInit(withSound = true) {
     this.soundEnabled = withSound;
     this.ensureContext();
@@ -242,7 +314,8 @@ class OrihourAudioEngine {
     }
 
     if (this.audioEl && !this.audioElRoutedToWebAudio) {
-      this.audioEl.volume = this.soundEnabled ? this.musicVol : 0;
+      this.audioEl.volume =
+        (this.soundEnabled ? this.musicVol : 0) * this.currentFadeMultiplier;
     }
   }
 
@@ -288,6 +361,15 @@ class OrihourAudioEngine {
   }
 
   private teardownAudioElement() {
+    if (this.mediaElementSource) {
+      try {
+        this.mediaElementSource.disconnect();
+      } catch {
+        // Ignore disconnect error
+      }
+      this.mediaElementSource = null;
+    }
+
     if (this.audioEl) {
       this.audioEl.onended = null;
       this.audioEl.onerror = null;
@@ -310,6 +392,7 @@ class OrihourAudioEngine {
     this.currentSourceKey = null;
     this.isPausedState = false;
     this.synthPausedOffsetSec = 0;
+    this.currentFadeMultiplier = 1;
     this.onProgressCb = null;
     this.onEndedCb = null;
     this.applyGainTargets();
@@ -350,6 +433,12 @@ class OrihourAudioEngine {
 
     if (this.audioEl) {
       this.isPausedState = false;
+      const cur = this.audioEl.currentTime || 0;
+      const dur =
+        Number.isFinite(this.audioEl.duration) && this.audioEl.duration > 0
+          ? this.audioEl.duration
+          : 0;
+      this.applyFadeGain(this.computeFadeMultiplier(cur, dur), true);
       this.audioEl.play().catch(() => {});
       this.startHtmlAudioProgressLoop();
       this.applyGainTargets();
@@ -375,22 +464,29 @@ class OrihourAudioEngine {
           ? this.audioEl.duration
           : this.clipEndSec;
 
-      if (this.clipMode === 'snippet') {
+      let targetSec = 0;
+      if (this.isClippedMode()) {
         const start = Math.max(0, this.clipStartSec);
-        const end = Math.min(totalDur || this.clipEndSec, Math.max(start + 5, this.clipEndSec));
-        const target = start + clamped * (end - start);
+        const end = Math.min(
+          totalDur || this.clipEndSec,
+          Math.max(start + 5, this.clipEndSec)
+        );
+        targetSec = start + clamped * (end - start);
         try {
-          this.audioEl.currentTime = target;
+          this.audioEl.currentTime = targetSec;
         } catch {
           // Ignore seek before metadata loaded
         }
       } else if (totalDur > 0) {
+        targetSec = clamped * totalDur;
         try {
-          this.audioEl.currentTime = clamped * totalDur;
+          this.audioEl.currentTime = targetSec;
         } catch {
           // Ignore
         }
       }
+
+      this.applyFadeGain(this.computeFadeMultiplier(targetSec, totalDur), true);
       this.onProgressCb?.(clamped);
       return;
     }
@@ -418,16 +514,27 @@ class OrihourAudioEngine {
     this.onEndedCb = onEnded;
 
     const rawAudioUrl = (track?.audioUrl || vinyl.audioUrl || '').trim();
-    const clipMode = track?.clipMode || vinyl.clipMode || 'full';
+    const clipMode: ClipMode = track?.clipMode || vinyl.clipMode || 'full';
     const clipStartSec = Math.max(0, track?.clipStartSec ?? vinyl.clipStartSec ?? 0);
     const clipEndSec = Math.max(
       clipStartSec + 5,
       track?.clipEndSec ?? vinyl.clipEndSec ?? 30
     );
 
+    const fadeInSec = Math.max(
+      0,
+      Number(track ? track.fadeInSec ?? 0 : vinyl.fadeInSec ?? 0) || 0
+    );
+    const fadeOutSec = Math.max(
+      0,
+      Number(track ? track.fadeOutSec ?? 0 : vinyl.fadeOutSec ?? 0) || 0
+    );
+
     this.clipMode = clipMode;
     this.clipStartSec = clipStartSec;
     this.clipEndSec = clipEndSec;
+    this.fadeInSec = fadeInSec;
+    this.fadeOutSec = fadeOutSec;
 
     if (rawAudioUrl) {
       this.startHtmlAudio(rawAudioUrl, vinyl, ctx, false);
@@ -449,27 +556,52 @@ class OrihourAudioEngine {
 
     const preset = bypassCorsEnhancer ? 'none' : parseAudioEnhancePreset(rawAudioUrl);
     const cleanUrl = stripAudioEnhancePreset(rawAudioUrl);
+    const needsFadeRouting = !bypassCorsEnhancer && (this.fadeInSec > 0 || this.fadeOutSec > 0);
 
     const audio = new Audio();
     audio.preload = 'auto';
 
     let routed = false;
-    if (preset !== 'none' && ctx && this.musicGain) {
+    if (ctx && this.trackFadeGain && (preset !== 'none' || needsFadeRouting)) {
       audio.crossOrigin = 'anonymous';
-      const connected = connectRealtimeAudioEnhancer(ctx, audio, preset, this.musicGain);
-      if (connected) {
-        routed = true;
+      if (preset !== 'none') {
+        const connected = connectRealtimeAudioEnhancer(
+          ctx,
+          audio,
+          preset,
+          this.trackFadeGain
+        );
+        if (connected) {
+          routed = true;
+        }
+      } else {
+        try {
+          const source = ctx.createMediaElementSource(audio);
+          source.connect(this.trackFadeGain);
+          this.mediaElementSource = source;
+          routed = true;
+        } catch {
+          routed = false;
+        }
       }
     }
 
     audio.src = cleanUrl;
-    audio.volume = routed ? 1 : this.soundEnabled ? this.musicVol : 0;
+    const initialFade = this.fadeInSec > 0 ? 0.001 : 1;
+    this.currentFadeMultiplier = initialFade;
 
     this.audioEl = audio;
     this.audioElRoutedToWebAudio = routed;
 
-    const seekInitialSnippet = () => {
-      if (this.clipMode === 'snippet' && this.clipStartSec > 0) {
+    if (routed) {
+      audio.volume = 1;
+      this.applyFadeGain(initialFade, true);
+    } else {
+      audio.volume = (this.soundEnabled ? this.musicVol : 0) * initialFade;
+    }
+
+    const seekInitialClip = () => {
+      if (this.isClippedMode() && this.clipStartSec > 0) {
         try {
           audio.currentTime = this.clipStartSec;
         } catch {
@@ -478,7 +610,7 @@ class OrihourAudioEngine {
       }
     };
 
-    audio.onloadedmetadata = seekInitialSnippet;
+    audio.onloadedmetadata = seekInitialClip;
 
     audio.onended = () => {
       if (this.audioEl !== audio) return;
@@ -493,7 +625,7 @@ class OrihourAudioEngine {
 
     audio.onerror = () => {
       if (this.audioEl !== audio) return;
-      // If CORS prevented Web Audio mastering on an external host, retry direct playback
+      // If CORS prevented Web Audio routing on an external host, retry direct playback
       if (!bypassCorsEnhancer && routed) {
         this.startHtmlAudio(rawAudioUrl, vinyl, ctx, true);
         return;
@@ -504,7 +636,7 @@ class OrihourAudioEngine {
       this.startProceduralSynth(vinyl, 0);
     };
 
-    seekInitialSnippet();
+    seekInitialClip();
     audio
       .play()
       .then(() => {
@@ -528,9 +660,16 @@ class OrihourAudioEngine {
       const cur = audio.currentTime || 0;
       const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
 
-      if (this.clipMode === 'snippet') {
+      // Apply smooth Fade In / Fade Out envelope
+      const fadeMult = this.computeFadeMultiplier(cur, dur);
+      this.applyFadeGain(fadeMult, false);
+
+      if (this.isClippedMode()) {
         const start = Math.max(0, this.clipStartSec);
-        const end = dur > 0 ? Math.min(dur, Math.max(start + 5, this.clipEndSec)) : Math.max(start + 5, this.clipEndSec);
+        const end =
+          dur > 0
+            ? Math.min(dur, Math.max(start + 5, this.clipEndSec))
+            : Math.max(start + 5, this.clipEndSec);
         const span = Math.max(1, end - start);
 
         if (cur >= end) {

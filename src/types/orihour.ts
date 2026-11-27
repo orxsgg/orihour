@@ -11,7 +11,7 @@ export const RELEASE_TYPES: ReleaseType[] = [
   'Cover',
 ];
 
-export type ClipMode = 'full' | 'snippet';
+export type ClipMode = 'full' | 'trimmed' | 'snippet';
 
 export interface TrackItem {
   id: string;
@@ -21,6 +21,8 @@ export interface TrackItem {
   clipMode?: ClipMode;
   clipStartSec?: number;
   clipEndSec?: number;
+  fadeInSec?: number;
+  fadeOutSec?: number;
 }
 
 export interface GenreItem {
@@ -57,10 +59,13 @@ export interface VinylRecord {
   /** Draw title, artist & year typography over the cover image */
   showCoverOverlay?: boolean;
   audioUrl?: string;
-  /** Full song or partial snippet playback */
+  /** Full song, trimmed edges (no visitor tag), or partial snippet playback */
   clipMode?: ClipMode;
   clipStartSec?: number;
   clipEndSec?: number;
+  /** Smooth fade-in and fade-out durations in seconds */
+  fadeInSec?: number;
+  fadeOutSec?: number;
   /** Used when releaseType === 'Song' */
   favoriteLyric: string;
   /** Used when releaseType !== 'Song' (Album, EP, Single, Live Version, Cover) */
