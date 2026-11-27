@@ -873,7 +873,7 @@ export default function VinylLibraryTab({
         resolvedClipEnd = favTrack.clipEndSec ?? 30;
       }
     }
-
+    setErrorMsg(null);
     setSaving(true);
     try {
       const payload: Partial<VinylRecord> = {
@@ -2144,6 +2144,23 @@ export default function VinylLibraryTab({
                   </label>
                 </div>
               </div>
+
+              {/* Error Banner Inside Modal */}
+              {errorMsg && (
+                <div className="mx-6 mb-3 flex shrink-0 items-center justify-between gap-2 rounded-xl border border-[#6E1D2C]/25 bg-[#6E1D2C]/10 px-4 py-2.5 text-xs font-semibold text-[#571622]">
+                  <span className="inline-flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-[#6E1D2C]" />
+                    <span>{errorMsg}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setErrorMsg(null)}
+                    className="cursor-pointer text-[#6E1D2C]/70 hover:text-[#571622]"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
 
               {/* Modal Footer */}
               <div className="flex shrink-0 items-center justify-end gap-2.5 border-t border-[#4A2E1B]/12 bg-[#F4ECE0] px-6 py-4">

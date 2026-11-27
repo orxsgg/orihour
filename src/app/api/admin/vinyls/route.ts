@@ -219,7 +219,7 @@ export async function POST(req: NextRequest) {
       clip_start_sec: clipStart,
       clip_end_sec: clipEnd,
       favorite_lyric: cleanText(body.favoriteLyric, 500),
-      favorite_song: cleanText(body.favoriteSong, 160) || null,
+      favorite_song: cleanText(body.favoriteSong, 160),
       tracks,
       liner_notes: cleanText(body.linerNotes, 2500),
       rack_slot: rackSlot,
@@ -325,10 +325,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     if ('favoriteLyric' in body) patch.favorite_lyric = cleanText(body.favoriteLyric, 500);
-    if ('favoriteSong' in body) {
-      const fav = cleanText(body.favoriteSong, 160);
-      patch.favorite_song = fav || null;
-    }
+    if ('favoriteSong' in body) patch.favorite_song = cleanText(body.favoriteSong, 160);
     if ('tracks' in body) patch.tracks = sanitizeTracks(body.tracks);
     if ('linerNotes' in body) patch.liner_notes = cleanText(body.linerNotes, 2500);
 
