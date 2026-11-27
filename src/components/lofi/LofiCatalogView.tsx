@@ -219,13 +219,13 @@ export default function LofiCatalogView({
           )}
         </section>
 
-        {/* Catalog Grid */}
+        {/* Catalog Grid (items-start prevents sibling cards from stretching when one expands) */}
         {filteredVinyls.length === 0 ? (
           <div className="rounded-[24px] border border-[#E5D7C3] bg-[#FAF5EC]/85 py-16 text-center font-mono text-xs text-[#7A624E]">
             No releases match your current search or filter.
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
             {filteredVinyls.map((v) => {
               const isCurrent = activeVinyl?.id === v.id;
               const isCurrentPlaying = isCurrent && isPlaying;
@@ -235,10 +235,14 @@ export default function LofiCatalogView({
               const favLyric = isSingle ? (v.favoriteLyric || '').trim() : '';
               const favSong = !isSingle ? (v.favoriteSong || '').trim() : '';
               const notes = (v.linerNotes || '').trim();
-              const isExpanded = expandedId === v.id;
               const trackList = Array.isArray(v.tracks) ? v.tracks : [];
-              const hasExpandableContent =
-                isMulti || Boolean(notes) || Boolean(favLyric) || Boolean(favSong);
+              const hasTracklist = isMulti && trackList.length > 0;
+              const hasDetailsContent =
+                Boolean(favLyric) ||
+                Boolean(favSong) ||
+                Boolean(notes) ||
+                hasTracklist;
+              const isExpanded = expandedId === v.id && hasDetailsContent;
 
               return (
                 <article
@@ -308,35 +312,10 @@ export default function LofiCatalogView({
                       </p>
                       <p className="mt-0.5 font-mono text-[10px] text-[#8A7360]">
                         {v.releaseYear} ·{' '}
-                        {isMulti ? `${trackList.length} tracks` : v.duration}
+                        {hasTracklist ? `${trackList.length} tracks` : v.duration}
                       </p>
                     </div>
                   </div>
-
-                  {/* Highlight: Favorite Lyric (Single) OR Favorite Song (Multi-Track) — Hidden completely if empty */}
-                  {favLyric && (
-                    <div className="mt-3.5 rounded-xl border border-[#4A2E1B]/12 bg-[#F6EFE3]/85 px-3.5 py-2.5">
-                      <p className="inline-flex items-center gap-1 font-mono text-[9px] font-semibold tracking-wider text-[#7A5230] uppercase">
-                        <Quote className="h-2.5 w-2.5" />
-                        Favorite Lyric
-                      </p>
-                      <p className="mt-1 font-serif text-sm leading-snug text-[#2E231B] italic">
-                        &ldquo;{favLyric}&rdquo;
-                      </p>
-                    </div>
-                  )}
-
-                  {favSong && (
-                    <div className="mt-3.5 rounded-xl border border-[#4A2E1B]/12 bg-[#F6EFE3]/85 px-3.5 py-2.5">
-                      <p className="inline-flex items-center gap-1 font-mono text-[9px] font-semibold tracking-wider text-[#7A5230] uppercase">
-                        <Star className="h-2.5 w-2.5 text-[#B58A52]" />
-                        Favorite Track
-                      </p>
-                      <p className="mt-0.5 text-xs font-semibold text-[#241A13]">
-                        {favSong}
-                      </p>
-                    </div>
-                  )}
 
                   {/* Card Actions */}
                   <div className="mt-3.5 flex items-center justify-between gap-2 border-t border-[#4A2E1B]/10 pt-3">
@@ -362,18 +341,18 @@ export default function LofiCatalogView({
                       )}
                     </button>
 
-                    {hasExpandableContent && (
+                    {hasDetailsContent && (
                       <button
                         type="button"
                         onClick={() => setExpandedId(isExpanded ? null : v.id)}
                         className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-1.5 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3]"
                       >
-                        {isMulti ? (
+                        {hasTracklist ? (
                           <ListMusic className="h-3.5 w-3.5" />
                         ) : (
                           <Info className="h-3.5 w-3.5" />
                         )}
-                        <span>{isMulti ? 'Tracklist' : 'Details'}</span>
+                        <span>{hasTracklist ? 'Tracklist' : 'Details'}</span>
                         {isExpanded ? (
                           <ChevronUp className="h-3.5 w-3.5" />
                         ) : (
@@ -383,9 +362,33 @@ export default function LofiCatalogView({
                     )}
                   </div>
 
-                  {/* Expanded Section: Curator Notes + Multi-Track Tracklist */}
+                  {/* Expanded Details: Favorite Lyric / Favorite Track + Curator Notes + Tracklist */}
                   {isExpanded && (
                     <div className="mt-3 space-y-3 border-t border-[#4A2E1B]/10 pt-3">
+                      {favLyric && (
+                        <div className="rounded-xl border border-[#4A2E1B]/12 bg-[#F6EFE3]/85 px-3.5 py-2.5">
+                          <p className="inline-flex items-center gap-1 font-mono text-[9.5px] font-semibold tracking-wider text-[#7A5230] uppercase">
+                            <Quote className="h-2.5 w-2.5" />
+                            Favorite Lyric
+                          </p>
+                          <p className="mt-1 font-serif text-sm leading-snug text-[#2E231B] italic">
+                            &ldquo;{favLyric}&rdquo;
+                          </p>
+                        </div>
+                      )}
+
+                      {favSong && (
+                        <div className="rounded-xl border border-[#4A2E1B]/12 bg-[#F6EFE3]/85 px-3.5 py-2.5">
+                          <p className="inline-flex items-center gap-1 font-mono text-[9.5px] font-semibold tracking-wider text-[#7A5230] uppercase">
+                            <Star className="h-2.5 w-2.5 fill-[#C89B54] text-[#C89B54]" />
+                            Favorite Track
+                          </p>
+                          <p className="mt-0.5 text-xs font-semibold text-[#241A13]">
+                            {favSong}
+                          </p>
+                        </div>
+                      )}
+
                       {notes && (
                         <div className="rounded-xl border border-[#4A2E1B]/10 bg-white/85 p-3.5">
                           <p className="inline-flex items-center gap-1.5 font-mono text-[9.5px] font-semibold tracking-wider text-[#7A5230] uppercase">
@@ -398,7 +401,7 @@ export default function LofiCatalogView({
                         </div>
                       )}
 
-                      {isMulti && trackList.length > 0 && (
+                      {hasTracklist && (
                         <div className="space-y-1.5 rounded-xl border border-[#4A2E1B]/10 bg-white/85 p-3">
                           <p className="font-mono text-[9.5px] font-semibold tracking-wider text-[#7A5230] uppercase">
                             TRACKLIST ({trackList.length})

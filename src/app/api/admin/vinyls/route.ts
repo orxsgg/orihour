@@ -210,7 +210,6 @@ export async function POST(req: NextRequest) {
       release_year: releaseYear,
       duration: cleanText(body.duration, 16) || '03:30',
       genre: genreString,
-      mood: genreString,
       label_color: cleanText(body.labelColor, 20) || '#4A2E1B',
       art_style: Math.max(0, Math.round(Number(body.artStyle) || 0)),
       cover_url: cleanOptionalUrl(body.coverUrl),
@@ -300,7 +299,6 @@ export async function PATCH(req: NextRequest) {
       const finalGenres = parsedGenres.length > 0 ? parsedGenres : ['Indie'];
       const genreString = formatGenres(finalGenres);
       patch.genre = genreString;
-      patch.mood = genreString;
       await ensureIndividualGenresExist(supabase, finalGenres);
     }
 
