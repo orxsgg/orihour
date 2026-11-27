@@ -63,14 +63,21 @@ function getSourceKey(vinyl: VinylRecord, track: TrackItem | null): string {
 }
 
 export default function OrihourHomePage() {
+  const [webglSupported, setWebglSupported] = useState(true);
   const [dataReady, setDataReady] = useState(false);
   const [sceneReady, setSceneReady] = useState(false);
   const [loadProgress, setLoadProgress] = useState(10);
   const [curtainFading, setCurtainFading] = useState(false);
   const [curtainMounted, setCurtainMounted] = useState(true);
   const [hasEntered, setHasEntered] = useState(false);
+
+  // Smooth Lo-Fi overlay states (keeps 3D canvas mounted behind for zero black flash & smooth camera)
   const [lofiMode, setLofiMode] = useState(false);
+  const [lofiMounted, setLofiMounted] = useState(false);
+  const [lofiVisible, setLofiVisible] = useState(false);
   const [lofiSource, setLofiSource] = useState<'ENTRY' | 'ROOM'>('ENTRY');
+  const lofiCloseTimerRef = useRef<number | null>(null);
+
   const [soundEnabled, setSoundEnabled] = useState(true);
 
   const [roomConfig, setRoomConfig] = useState<RoomConfig>(DEFAULT_ROOM_CONFIG);
@@ -113,6 +120,9 @@ export default function OrihourHomePage() {
   const hasManualWeather = useRef(false);
   const weatherRef = useRef<WeatherType>('CLEAR');
   const lofiModeRef = useRef(false);
+  const startPlaybackRef = useRef<
+    ((vinyl: VinylRecord, trackOverride?: TrackItem | null) => void) | null
+  >(null);
 
   weatherRef.current = weather;
   lofiModeRef.current = lofiMode;
@@ -126,8 +136,50 @@ export default function OrihourHomePage() {
   const [pinboardOpen, setPinboardOpen] = useState(false);
   const [hoverLabel, setHoverLabel] = useState<string | null>(null);
 
+  const openLofi = useCallback((source: 'ENTRY' | 'ROOM') => {
+    if (lofiCloseTimerRef.current !== null) {
+      window.clearTimeout(lofiCloseTimerRef.current);
+      lofiCloseTimerRef.current = null;
+    }
+    setLofiSource(source);
+    setLofiMode(true);
+    setLofiMounted(true);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        setLofiVisible(true);
+      });
+    });
+  }, []);
+
+  const closeLofi = useCallback(() => {
+    setLofiVisible(false);
+    setLofiMode(false);
+    if (lofiSource === 'ENTRY') {
+      setHasEntered(false);
+      setCameraFocus('ENTRY');
+    } else {
+      setHasEntered(true);
+      setCameraFocus('DESK');
+    }
+    if (lofiCloseTimerRef.current !== null) {
+      window.clearTimeout(lofiCloseTimerRef.current);
+    }
+    lofiCloseTimerRef.current = window.setTimeout(() => {
+      setLofiMounted(false);
+      lofiCloseTimerRef.current = null;
+    }, 320);
+  }, [lofiSource]);
+
   const handleSceneReady = useCallback(() => {
     setSceneReady(true);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (lofiCloseTimerRef.current !== null) {
+        window.clearTimeout(lofiCloseTimerRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -172,14 +224,20 @@ export default function OrihourHomePage() {
       const canvas = document.createElement('canvas');
       const gl = canvas.getContext('webgl2');
       if (!gl) {
+        setWebglSupported(false);
         setLofiSource('ENTRY');
         setLofiMode(true);
+        setLofiMounted(true);
+        setLofiVisible(true);
         setDataReady(true);
         setSceneReady(true);
       }
     } catch {
+      setWebglSupported(false);
       setLofiSource('ENTRY');
       setLofiMode(true);
+      setLofiMounted(true);
+      setLofiVisible(true);
       setDataReady(true);
       setSceneReady(true);
     }
@@ -323,7 +381,7 @@ export default function OrihourHomePage() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && hasEntered) {
+      if (e.key === 'Escape' && hasEntered && !lofiMode) {
         stopCardPlayback();
         setLinerModalOpen(false);
         setCollectionOpen(false);
@@ -336,7 +394,7 @@ export default function OrihourHomePage() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [hasEntered, stopCardPlayback]);
+  }, [hasEntered, lofiMode, stopCardPlayback]);
 
   const handleManualWeatherChange = useCallback((next: WeatherType) => {
     hasManualWeather.current = true;
@@ -366,6 +424,19 @@ export default function OrihourHomePage() {
         vinyl,
         (ratio) => setProgressRatio(ratio),
         () => {
+          // Auto-advance to the next track when release has multiple tracks
+          if (hasMultipleTracks(vinyl) && resolvedTrack) {
+            const tracks = vinyl.tracks || [];
+            const currentIdx = tracks.findIndex((t) => t.id === resolvedTrack.id);
+            if (currentIdx >= 0 && currentIdx + 1 < tracks.length) {
+              const nextTrack = tracks[currentIdx + 1];
+              setProgressRatio(0);
+              window.setTimeout(() => {
+                startPlaybackRef.current?.(vinyl, nextTrack);
+              }, 180);
+              return;
+            }
+          }
           setIsPlaying(false);
           setProgressRatio(0);
         },
@@ -374,6 +445,8 @@ export default function OrihourHomePage() {
     },
     []
   );
+
+  startPlaybackRef.current = startTurntablePlayback;
 
   const handleSelectVinyl = useCallback(
     (vinyl: VinylRecord, origin?: THREE.Vector3, subTrack?: TrackItem | null) => {
@@ -599,42 +672,11 @@ export default function OrihourHomePage() {
     setCameraFocus('DESK');
   };
 
-  if (lofiMode) {
-    return (
-      <LofiCatalogView
-        config={roomConfig}
-        vinyls={vinyls}
-        genres={genres}
-        activeVinyl={activeVinyl}
-        activeTrack={activeTrack}
-        isPlaying={isPlaying}
-        progressRatio={progressRatio}
-        returnTarget={lofiSource}
-        onSelectAndPlay={(v, subTrack) => {
-          audioEngine.unlockAndInit(soundEnabled);
-          handleSelectVinyl(v, undefined, subTrack);
-        }}
-        onPrevTrack={() => handleStepActiveTrack(-1)}
-        onNextTrack={() => handleStepActiveTrack(1)}
-        onSeekProgress={handleSeekTurntable}
-        onReturnTo3D={() => {
-          setLofiMode(false);
-          if (lofiSource === 'ENTRY') {
-            setHasEntered(false);
-            setCameraFocus('ENTRY');
-          } else {
-            setHasEntered(true);
-            setCameraFocus('DESK');
-          }
-        }}
-      />
-    );
-  }
-
   return (
     <main className="relative h-screen w-screen overflow-hidden bg-[#120E0B] select-none">
+      {/* Persistent 3D Canvas — stays mounted during Lo-Fi mode so return transition is instant & smooth */}
       <div className="fixed inset-0 z-0 h-screen w-screen">
-        {dataReady && (
+        {dataReady && webglSupported && (
           <OrihourCanvas
             config={roomConfig}
             vinyls={vinyls}
@@ -705,7 +747,7 @@ export default function OrihourHomePage() {
 
       {!hasEntered ? (
         <EntryGate
-          visible={curtainFading}
+          visible={curtainFading && !lofiVisible}
           isNightHud={atmosphere.isNightHud}
           hourDecimal={hourDecimal}
           phaseLabel={atmosphere.phaseLabel}
@@ -714,10 +756,7 @@ export default function OrihourHomePage() {
           featuredTitle={activeVinyl?.title ?? null}
           featuredArtist={activeVinyl?.artist ?? null}
           onEnterRoom={handleEnterRoom}
-          onEnterLofi={() => {
-            setLofiSource('ENTRY');
-            setLofiMode(true);
-          }}
+          onEnterLofi={() => openLofi('ENTRY')}
         />
       ) : (
         <>
@@ -774,10 +813,7 @@ export default function OrihourHomePage() {
               setCameraFocus('PINBOARD');
               setPinboardOpen(true);
             }}
-            onSwitchToLofi={() => {
-              setLofiSource('ROOM');
-              setLofiMode(true);
-            }}
+            onSwitchToLofi={() => openLofi('ROOM')}
           />
 
           <LinerNotesModal
@@ -828,6 +864,34 @@ export default function OrihourHomePage() {
             onClose={() => setPinboardOpen(false)}
           />
         </>
+      )}
+
+      {/* Smooth Cross-Fade Lo-Fi Catalog Overlay */}
+      {lofiMounted && (
+        <div
+          className={`fixed inset-0 z-40 overflow-y-auto orihour-scroll select-text transition-opacity duration-300 ease-out ${
+            lofiVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+        >
+          <LofiCatalogView
+            config={roomConfig}
+            vinyls={vinyls}
+            genres={genres}
+            activeVinyl={activeVinyl}
+            activeTrack={activeTrack}
+            isPlaying={isPlaying}
+            progressRatio={progressRatio}
+            returnTarget={lofiSource}
+            onSelectAndPlay={(v, subTrack) => {
+              audioEngine.unlockAndInit(soundEnabled);
+              handleSelectVinyl(v, undefined, subTrack);
+            }}
+            onPrevTrack={() => handleStepActiveTrack(-1)}
+            onNextTrack={() => handleStepActiveTrack(1)}
+            onSeekProgress={handleSeekTurntable}
+            onReturnTo3D={closeLofi}
+          />
+        </div>
       )}
     </main>
   );

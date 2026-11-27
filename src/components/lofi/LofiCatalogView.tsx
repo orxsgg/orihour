@@ -123,14 +123,14 @@ export default function LofiCatalogView({
 
   return (
     <div
-      className="min-h-screen bg-[#F3ECE0] pb-28 text-[#241A13]"
+      className="min-h-full bg-[#F3ECE0] pb-32 text-[#241A13]"
       style={{
         backgroundImage:
           'radial-gradient(circle at 12% 10%, rgba(200, 155, 84, 0.2), transparent 44%), radial-gradient(circle at 88% 85%, rgba(74, 46, 27, 0.12), transparent 46%)',
       }}
     >
       {/* Top Sticky Header */}
-      <header className="sticky top-0 z-30 border-b border-[#E5D7C3] bg-[#FAF5EC]/90 backdrop-blur-xl">
+      <header className="sticky top-0 z-30 border-b border-[#E5D7C3] bg-[#FAF5EC]/92 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#4A2E1B] text-[#FAF5EC] shadow-xs">
@@ -467,10 +467,10 @@ export default function LofiCatalogView({
         )}
       </main>
 
-      {/* Sticky Bottom Now Playing Bar (Prev/Next shown ONLY when release has > 1 track) */}
+      {/* Sticky Bottom Now Playing Bar */}
       {activeVinyl && (
         <div className="fixed inset-x-0 bottom-0 z-40 border-t border-[#E5D7C3] bg-[#FAF5EC]/95 shadow-[0_-12px_36px_rgba(24,17,12,0.14)] backdrop-blur-xl">
-          <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-4 py-3 sm:px-6">
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-4 py-3 sm:px-6">
             <div className="flex min-w-0 flex-1 items-center gap-3">
               <img
                 src={getThumb(activeVinyl)}
@@ -492,20 +492,66 @@ export default function LofiCatalogView({
               </div>
             </div>
 
-            <div className="flex w-full items-center gap-2.5 sm:w-auto sm:min-w-[300px]">
-              <div className="flex shrink-0 items-center gap-1.5">
-                {activeHasMultiTracks && onPrevTrack && (
+            {activeHasMultiTracks && onPrevTrack && onNextTrack ? (
+              /* Multi-track: Prev/Play/Next centered on top, progress bar neatly underneath */
+              <div className="flex w-full flex-col items-center gap-2 sm:w-80">
+                <div className="flex items-center gap-2.5">
                   <button
                     type="button"
                     onClick={onPrevTrack}
-                    className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white text-[#4A2E1B] shadow-xs transition hover:bg-[#EFE4D3]"
+                    className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white text-[#4A2E1B] shadow-xs transition hover:bg-[#EFE4D3]"
                     aria-label="Previous track"
                     title="Previous track"
                   >
                     <SkipBack className="h-3.5 w-3.5 fill-current" />
                   </button>
-                )}
 
+                  <button
+                    type="button"
+                    onClick={() => onSelectAndPlay(activeVinyl, activeTrack)}
+                    className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-[#4A2E1B] text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213]"
+                    aria-label={isPlaying ? 'Pause' : 'Play'}
+                  >
+                    {isPlaying ? (
+                      <Pause className="h-4 w-4" />
+                    ) : (
+                      <Play className="ml-0.5 h-4 w-4" />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={onNextTrack}
+                    className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white text-[#4A2E1B] shadow-xs transition hover:bg-[#EFE4D3]"
+                    aria-label="Next track"
+                    title="Next track"
+                  >
+                    <SkipForward className="h-3.5 w-3.5 fill-current" />
+                  </button>
+                </div>
+
+                <div className="relative flex w-full items-center">
+                  <div className="pointer-events-none h-1.5 w-full overflow-hidden rounded-full bg-[#4A2E1B]/15">
+                    <div
+                      className="h-full rounded-full bg-[#4A2E1B] transition-[width] duration-150"
+                      style={{ width: `${Math.round(progressRatio * 100)}%` }}
+                    />
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.005}
+                    value={progressRatio}
+                    onChange={(e) => onSeekProgress(parseFloat(e.target.value))}
+                    aria-label="Seek playback position"
+                    className="absolute inset-0 h-5 w-full -translate-y-1.5 cursor-pointer opacity-0"
+                  />
+                </div>
+              </div>
+            ) : (
+              /* Single track: Play/Pause + bar side-by-side */
+              <div className="flex w-full items-center gap-3 sm:w-80">
                 <button
                   type="button"
                   onClick={() => onSelectAndPlay(activeVinyl, activeTrack)}
@@ -519,38 +565,26 @@ export default function LofiCatalogView({
                   )}
                 </button>
 
-                {activeHasMultiTracks && onNextTrack && (
-                  <button
-                    type="button"
-                    onClick={onNextTrack}
-                    className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white text-[#4A2E1B] shadow-xs transition hover:bg-[#EFE4D3]"
-                    aria-label="Next track"
-                    title="Next track"
-                  >
-                    <SkipForward className="h-3.5 w-3.5 fill-current" />
-                  </button>
-                )}
-              </div>
-
-              <div className="relative flex flex-1 items-center">
-                <div className="pointer-events-none h-1.5 w-full overflow-hidden rounded-full bg-[#4A2E1B]/15">
-                  <div
-                    className="h-full rounded-full bg-[#4A2E1B] transition-[width] duration-150"
-                    style={{ width: `${Math.round(progressRatio * 100)}%` }}
+                <div className="relative flex flex-1 items-center">
+                  <div className="pointer-events-none h-1.5 w-full overflow-hidden rounded-full bg-[#4A2E1B]/15">
+                    <div
+                      className="h-full rounded-full bg-[#4A2E1B] transition-[width] duration-150"
+                      style={{ width: `${Math.round(progressRatio * 100)}%` }}
+                    />
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.005}
+                    value={progressRatio}
+                    onChange={(e) => onSeekProgress(parseFloat(e.target.value))}
+                    aria-label="Seek playback position"
+                    className="absolute inset-0 h-5 w-full -translate-y-1.5 cursor-pointer opacity-0"
                   />
                 </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.005}
-                  value={progressRatio}
-                  onChange={(e) => onSeekProgress(parseFloat(e.target.value))}
-                  aria-label="Seek playback position"
-                  className="absolute inset-0 h-5 w-full -translate-y-1.5 cursor-pointer opacity-0"
-                />
               </div>
-            </div>
+            )}
           </div>
         </div>
       )}

@@ -118,7 +118,6 @@ export default function OrihourAdminPage() {
       throw new Error(data.error || 'Gagal memperbarui vinyl turntable.');
     }
 
-    // Jika vinyl terpasang sebelumnya ada di rak, kosongkan slot raknya agar tidak dobel
     if (vinylId) {
       const existing = vinyls.find((v) => v.id === vinylId);
       if (existing && existing.rackSlot !== null) {
@@ -335,14 +334,14 @@ export default function OrihourAdminPage() {
 
   return (
     <div
-      className="min-h-screen bg-[#F2E9DB] text-[#241A13]"
+      className="flex h-screen flex-col overflow-hidden bg-[#F2E9DB] text-[#241A13]"
       style={{
         backgroundImage:
           'radial-gradient(circle at 12% 8%, rgba(200, 155, 84, 0.18), transparent 42%), radial-gradient(circle at 90% 92%, rgba(74, 46, 27, 0.12), transparent 46%)',
       }}
     >
-      {/* Top Curator Admin Header */}
-      <header className="sticky top-0 z-30 border-b border-[#E5D7C3] bg-[#FAF5EC]/90 backdrop-blur-xl">
+      {/* Fixed Top Curator Admin Header — Never shifts on scroll */}
+      <header className="z-30 shrink-0 border-b border-[#E5D7C3] bg-[#FAF5EC]/92 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-6">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[#4A2E1B] text-[#FAF5EC] shadow-sm">
@@ -427,75 +426,77 @@ export default function OrihourAdminPage() {
         </div>
       </header>
 
-      {/* Main Tab Content */}
-      <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
-        {errorMsg && (
-          <div className="mb-5 flex items-center gap-2.5 rounded-2xl border border-[#4A2E1B]/30 bg-[#4A2E1B]/10 px-4 py-3 text-xs font-semibold text-[#3A2213]">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-[#7A5230]" />
-            <span>{errorMsg}</span>
-          </div>
-        )}
+      {/* Internal Scrollable Tab Content Area */}
+      <div className="orihour-scroll flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+        <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
+          {errorMsg && (
+            <div className="mb-5 flex items-center gap-2.5 rounded-2xl border border-[#4A2E1B]/30 bg-[#4A2E1B]/10 px-4 py-3 text-xs font-semibold text-[#3A2213]">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-[#7A5230]" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
 
-        {loading && vinyls.length === 0 && activeTab !== 'analytics' ? (
-          <div className="flex flex-col items-center justify-center rounded-[24px] border border-[#E5D7C3] bg-[#FAF5EC]/80 py-20 text-center">
-            <Disc3 className="h-7 w-7 animate-spin text-[#4A2E1B]" />
-            <p className="mt-3 font-mono text-xs text-[#655040]">
-              Memuat data ruangan Orihour...
-            </p>
-          </div>
-        ) : (
-          <>
-            {activeTab === 'turntable' && (
-              <TurntableRackTab
-                config={config}
-                vinyls={vinyls}
-                onUpdateActiveTurntable={handleUpdateActiveTurntable}
-                onSaveRackOrder={handleSaveRackOrder}
-              />
-            )}
+          {loading && vinyls.length === 0 && activeTab !== 'analytics' ? (
+            <div className="flex flex-col items-center justify-center rounded-[24px] border border-[#E5D7C3] bg-[#FAF5EC]/80 py-20 text-center">
+              <Disc3 className="h-7 w-7 animate-spin text-[#4A2E1B]" />
+              <p className="mt-3 font-mono text-xs text-[#655040]">
+                Memuat data ruangan Orihour...
+              </p>
+            </div>
+          ) : (
+            <>
+              {activeTab === 'turntable' && (
+                <TurntableRackTab
+                  config={config}
+                  vinyls={vinyls}
+                  onUpdateActiveTurntable={handleUpdateActiveTurntable}
+                  onSaveRackOrder={handleSaveRackOrder}
+                />
+              )}
 
-            {activeTab === 'vinyls' && (
-              <VinylLibraryTab
-                vinyls={vinyls}
-                genres={genres}
-                activeTurntableVinylId={config.activeTurntableVinylId}
-                onCreateVinyl={handleCreateVinyl}
-                onUpdateVinyl={handleUpdateVinyl}
-                onDeleteVinyl={handleDeleteVinyl}
-                onBulkDeleteVinyls={handleBulkDeleteVinyls}
-                onAddGenre={handleAddGenre}
-                onDeleteGenre={handleDeleteGenre}
-                onBulkDeleteGenres={handleBulkDeleteGenres}
-              />
-            )}
+              {activeTab === 'vinyls' && (
+                <VinylLibraryTab
+                  vinyls={vinyls}
+                  genres={genres}
+                  activeTurntableVinylId={config.activeTurntableVinylId}
+                  onCreateVinyl={handleCreateVinyl}
+                  onUpdateVinyl={handleUpdateVinyl}
+                  onDeleteVinyl={handleDeleteVinyl}
+                  onBulkDeleteVinyls={handleBulkDeleteVinyls}
+                  onAddGenre={handleAddGenre}
+                  onDeleteGenre={handleDeleteGenre}
+                  onBulkDeleteGenres={handleBulkDeleteGenres}
+                />
+              )}
 
-            {activeTab === 'posters' && (
-              <WallPostersTab
-                posters={config.posters}
-                onUpdatePoster={handleUpdatePoster}
-              />
-            )}
+              {activeTab === 'posters' && (
+                <WallPostersTab
+                  posters={config.posters}
+                  onUpdatePoster={handleUpdatePoster}
+                />
+              )}
 
-            {activeTab === 'pinboard' && (
-              <PinboardModerationTab
-                postcards={postcards}
-                onTogglePin={handleTogglePin}
-                onDeletePostcard={handleDeletePostcard}
-                onBulkDeletePostcards={handleBulkDeletePostcards}
-              />
-            )}
+              {activeTab === 'pinboard' && (
+                <PinboardModerationTab
+                  postcards={postcards}
+                  onTogglePin={handleTogglePin}
+                  onDeletePostcard={handleDeletePostcard}
+                  onBulkDeletePostcards={handleBulkDeletePostcards}
+                />
+              )}
 
-            {activeTab === 'room' && (
-              <RoomWalletTab
-                config={config}
-                onSaveSettings={handleSaveRoomSettings}
-              />
-            )}
+              {activeTab === 'room' && (
+                <RoomWalletTab
+                  config={config}
+                  onSaveSettings={handleSaveRoomSettings}
+                />
+              )}
 
-            {activeTab === 'analytics' && <AnalyticsTab />}
-          </>
-        )}
-      </main>
+              {activeTab === 'analytics' && <AnalyticsTab />}
+            </>
+          )}
+        </main>
+      </div>
     </div>
   );
 }
