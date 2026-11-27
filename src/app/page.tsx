@@ -11,6 +11,7 @@ import {
 } from '@/data/mockVinyls';
 import {
   extractUniqueGenres,
+  hasMultipleTracks,
   isSingleSongRelease,
   sortPostcardsForBoard,
 } from '@/lib/genreUtils';
@@ -258,7 +259,6 @@ export default function OrihourHomePage() {
     };
   }, []);
 
-  // Track visit once per browser session (privacy-safe, non-blocking)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const TRACK_FLAG = 'orihour_visit_tracked_v1';
@@ -473,6 +473,23 @@ export default function OrihourHomePage() {
     [activeVinyl, activeTrack, handleTogglePlay, startTurntablePlayback]
   );
 
+  const handleStepActiveTrack = useCallback(
+    (delta: -1 | 1) => {
+      if (isTransferring || !activeVinyl || !hasMultipleTracks(activeVinyl)) return;
+      const tracks = activeVinyl.tracks || [];
+      if (tracks.length < 2) return;
+
+      audioEngine.unlockAndInit(soundEnabled);
+      const currentIdx = activeTrack
+        ? tracks.findIndex((t) => t.id === activeTrack.id)
+        : 0;
+      const safeIdx = currentIdx >= 0 ? currentIdx : 0;
+      const nextIdx = (safeIdx + delta + tracks.length) % tracks.length;
+      startTurntablePlayback(activeVinyl, tracks[nextIdx]);
+    },
+    [activeVinyl, activeTrack, isTransferring, soundEnabled, startTurntablePlayback]
+  );
+
   const handleSeekTurntable = useCallback(
     (ratio: number) => {
       if (!activeVinyl) return;
@@ -597,6 +614,8 @@ export default function OrihourHomePage() {
           audioEngine.unlockAndInit(soundEnabled);
           handleSelectVinyl(v, undefined, subTrack);
         }}
+        onPrevTrack={() => handleStepActiveTrack(-1)}
+        onNextTrack={() => handleStepActiveTrack(1)}
         onSeekProgress={handleSeekTurntable}
         onReturnTo3D={() => {
           setLofiMode(false);
@@ -727,6 +746,8 @@ export default function OrihourHomePage() {
               audioEngine.setSoundEnabled(next);
             }}
             onTogglePlay={handleTogglePlay}
+            onPrevTrack={() => handleStepActiveTrack(-1)}
+            onNextTrack={() => handleStepActiveTrack(1)}
             onSeekProgress={handleSeekTurntable}
             onToggleTimeScrubber={() => setShowTimeScrubber((prev) => !prev)}
             onScrubHour={(h) => {

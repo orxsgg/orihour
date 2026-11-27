@@ -2,18 +2,37 @@
 
 import React, { useState } from 'react';
 import {
+  Disc3,
   Play,
   Pause,
+  SkipBack,
+  SkipForward,
+  Sun,
+  Cloud,
+  CloudRain,
+  Wind,
+  LampDesk,
   Volume2,
   VolumeX,
   SlidersHorizontal,
-  RotateCcw,
+  Clock,
+  BookOpen,
   Library,
   Pin,
-  ChevronRight,
-  Settings2,
+  LayoutGrid,
+  Compass,
+  RotateCcw,
+  Wallet,
+  Music2,
 } from 'lucide-react';
-import { CameraFocusTarget, TrackItem, VinylRecord, WeatherType } from '@/types/orihour';
+import {
+  CameraFocusTarget,
+  TrackItem,
+  VinylRecord,
+  WeatherType,
+} from '@/types/orihour';
+import { hasMultipleTracks } from '@/lib/genreUtils';
+import { getSleeveDataUrl } from '@/components/room-3d/textures';
 
 interface MinimalHudProps {
   activeVinyl: VinylRecord | null;
@@ -36,6 +55,8 @@ interface MinimalHudProps {
   onToggleLamp: () => void;
   onToggleSound: () => void;
   onTogglePlay: () => void;
+  onPrevTrack?: () => void;
+  onNextTrack?: () => void;
   onSeekProgress: (ratio: number) => void;
   onToggleTimeScrubber: () => void;
   onScrubHour: (hour: number) => void;
@@ -47,363 +68,505 @@ interface MinimalHudProps {
   onSwitchToLofi: () => void;
 }
 
-const NAV_ITEMS: { id: CameraFocusTarget; label: string }[] = [
-  { id: 'ROOM', label: 'ROOM' },
-  { id: 'TURNTABLE', label: 'TURNTABLE' },
-  { id: 'CRATE', label: 'RACK' },
-  { id: 'WALLET', label: 'WALLET' },
-  { id: 'NOTES', label: 'NOTEPAD' },
-  { id: 'WINDOW', label: 'WINDOW' },
-  { id: 'CLOCK', label: 'CLOCK' },
+const FOCUS_TABS: { id: CameraFocusTarget; label: string }[] = [
+  { id: 'DESK', label: 'Room' },
+  { id: 'TURNTABLE', label: 'Turntable' },
+  { id: 'CRATE', label: 'Rack' },
+  { id: 'NOTES', label: 'Journal' },
+  { id: 'PINBOARD', label: 'Pinboard' },
+  { id: 'WALLET', label: 'Pass' },
 ];
 
-const WEATHER_ORDER: WeatherType[] = ['CLEAR', 'CLOUDY', 'RAIN', 'BREEZY'];
+const WEATHER_OPTIONS: {
+  id: WeatherType;
+  label: string;
+  Icon: React.ComponentType<{ className?: string }>;
+}[] = [
+  { id: 'CLEAR', label: 'Clear', Icon: Sun },
+  { id: 'CLOUDY', label: 'Cloudy', Icon: Cloud },
+  { id: 'RAIN', label: 'Rain', Icon: CloudRain },
+  { id: 'BREEZY', label: 'Breezy', Icon: Wind },
+];
 
-export default function MinimalHud(props: MinimalHudProps) {
-  const [showMixer, setShowMixer] = useState(false);
-  const [controlsOpen, setControlsOpen] = useState(true);
-  const [musicVol, setMusicVol] = useState(0.75);
+function formatClock(hourDecimal: number): string {
+  const totalMins = Math.floor((((hourDecimal % 24) + 24) % 24) * 60);
+  const hh = String(Math.floor(totalMins / 60)).padStart(2, '0');
+  const mm = String(totalMins % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+export default function MinimalHud({
+  activeVinyl,
+  activeTrack,
+  vinylCount,
+  postcardCount,
+  isPlaying,
+  progressRatio,
+  cameraFocus,
+  weather,
+  lampOn,
+  soundEnabled,
+  hourDecimal,
+  isLiveTime,
+  phaseLabel,
+  showTimeScrubber,
+  hoverLabel,
+  onChangeFocus,
+  onChangeWeather,
+  onToggleLamp,
+  onToggleSound,
+  onTogglePlay,
+  onPrevTrack,
+  onNextTrack,
+  onSeekProgress,
+  onToggleTimeScrubber,
+  onScrubHour,
+  onResetLiveTime,
+  onUpdateVolumes,
+  onOpenLinerNotes,
+  onOpenCollection,
+  onOpenPinboard,
+  onSwitchToLofi,
+}: MinimalHudProps) {
+  const [mixerOpen, setMixerOpen] = useState(false);
+  const [weatherOpen, setWeatherOpen] = useState(false);
+
+  const [musicVol, setMusicVol] = useState(0.78);
   const [rainVol, setRainVol] = useState(0.35);
   const [crackleVol, setCrackleVol] = useState(0.22);
 
-  const formattedTime = (() => {
-    const mins = Math.floor((((props.hourDecimal % 24) + 24) % 24) * 60);
-    const hh = String(Math.floor(mins / 60)).padStart(2, '0');
-    const mm = String(mins % 60).padStart(2, '0');
-    return `${hh}:${mm}`;
-  })();
+  const showTrackNav = Boolean(activeVinyl && hasMultipleTracks(activeVinyl));
 
-  const handleMixerChange = (m: number, r: number, c: number) => {
-    setMusicVol(m);
-    setRainVol(r);
-    setCrackleVol(c);
-    props.onUpdateVolumes(m, r, c);
+  const activeWeatherInfo =
+    WEATHER_OPTIONS.find((w) => w.id === weather) || WEATHER_OPTIONS[0];
+  const ActiveWeatherIcon = activeWeatherInfo.Icon;
+
+  const coverSrc = activeVinyl
+    ? activeVinyl.coverUrl ||
+      (typeof window !== 'undefined' ? getSleeveDataUrl(activeVinyl) : '')
+    : '';
+
+  const handleVolumeChange = (nextM: number, nextR: number, nextC: number) => {
+    setMusicVol(nextM);
+    setRainVol(nextR);
+    setCrackleVol(nextC);
+    onUpdateVolumes(nextM, nextR, nextC);
   };
-
-  const nextWeather = () => {
-    const idx = WEATHER_ORDER.indexOf(props.weather);
-    props.onChangeWeather(WEATHER_ORDER[(idx + 1) % WEATHER_ORDER.length]);
-  };
-
-  const hasRecord = Boolean(props.activeVinyl);
-  const displayTitle = props.activeTrack
-    ? `${props.activeTrack.title} (${props.activeVinyl?.title ?? ''})`
-    : props.activeVinyl?.title ?? '';
 
   return (
-    <>
-      {/* Top Borderless Editorial Bar */}
-      <header className="pointer-events-none fixed top-0 right-0 left-0 z-20 flex flex-wrap items-center justify-between gap-3 px-6 py-5">
-        <button
-          type="button"
-          onClick={() => props.onChangeFocus('DESK')}
-          className="pointer-events-auto cursor-pointer font-mono text-sm font-bold tracking-[0.22em] text-[#FAF5EC] uppercase drop-shadow-[0_1px_6px_rgba(0,0,0,0.7)] transition hover:text-[#E6C79C]"
-        >
-          ORIHOUR
-        </button>
-
-        <nav className="pointer-events-auto flex flex-wrap items-center gap-4 font-mono text-[11px] font-semibold tracking-[0.14em] text-[#FAF5EC]/92 drop-shadow-[0_1px_6px_rgba(0,0,0,0.7)]">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => props.onChangeFocus(item.id)}
-              className={`cursor-pointer transition hover:text-white ${
-                props.cameraFocus === item.id
-                  ? 'text-[#E6C79C] underline underline-offset-4'
-                  : ''
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-
-          <span className="h-3 w-px bg-[#FAF5EC]/30" />
-
-          <button
-            type="button"
-            onClick={props.onOpenCollection}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-[#FAF5EC]/35 bg-[#2A1A10]/65 px-3 py-1 text-[10.5px] text-[#FAF5EC] backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
-          >
-            <Library className="h-3 w-3" />
-            <span>COLLECTION ({props.vinylCount})</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={props.onOpenPinboard}
-            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-3 py-1 text-[10.5px] backdrop-blur-md transition ${
-              props.cameraFocus === 'PINBOARD'
-                ? 'border-[#E6C79C] bg-[#4A2E1B] text-[#FAF5EC]'
-                : 'border-[#FAF5EC]/35 bg-[#2A1A10]/65 text-[#FAF5EC] hover:border-[#E6C79C] hover:bg-[#4A2E1B]'
-            }`}
-          >
-            <Pin className="h-3 w-3" />
-            <span>PINBOARD ({props.postcardCount})</span>
-          </button>
-        </nav>
-      </header>
-
-      {/* Time Scrubber Popover */}
-      {props.showTimeScrubber && (
-        <div className="fixed top-16 right-6 z-30 w-72 rounded-xl border border-[#E6C79C]/30 bg-[#1F140D]/88 p-4 text-[#FAF5EC] shadow-2xl backdrop-blur-xl">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="font-mono text-[11px] font-semibold">
-              {formattedTime} · {props.phaseLabel}
-            </span>
-            <button
-              type="button"
-              onClick={props.onResetLiveTime}
-              className="inline-flex cursor-pointer items-center gap-1 rounded bg-[#FAF5EC]/15 px-2 py-0.5 font-mono text-[10px] hover:bg-[#FAF5EC]/25"
-            >
-              <RotateCcw className="h-3 w-3" />
-              LIVE
-            </button>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={23.98}
-            step={0.05}
-            value={props.hourDecimal}
-            onChange={(e) => props.onScrubHour(parseFloat(e.target.value))}
-            className="w-full cursor-pointer accent-[#D4AA63]"
-          />
-          <div className="mt-1 flex justify-between font-mono text-[9px] text-[#FAF5EC]/60">
-            <span>00:00</span>
-            <span>06:00</span>
-            <span>12:00</span>
-            <span>18:00</span>
-            <span>23:59</span>
-          </div>
+    <div className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between p-4 sm:p-5">
+      {/* Top Bar: Left Camera Focus Navigation & Right Environment Controls */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        {/* Camera Focus Pills */}
+        <div className="pointer-events-auto flex flex-wrap items-center gap-1 rounded-2xl border border-[#E5D7C3]/85 bg-[#FAF5EC]/82 p-1.5 shadow-[0_10px_28px_rgba(18,12,8,0.22)] backdrop-blur-xl">
+          <span className="hidden items-center gap-1 px-2 font-mono text-[9.5px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase md:inline-flex">
+            <Compass className="h-3 w-3" />
+            View
+          </span>
+          {FOCUS_TABS.map((tab) => {
+            const active = cameraFocus === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => onChangeFocus(tab.id)}
+                className={`inline-flex cursor-pointer items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                  active
+                    ? 'bg-[#4A2E1B] text-[#FAF5EC] shadow-xs'
+                    : 'text-[#4A2E1B]/85 hover:bg-[#4A2E1B]/10 hover:text-[#241A13]'
+                }`}
+              >
+                {tab.id === 'WALLET' && <Wallet className="h-3 w-3" />}
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
         </div>
-      )}
 
-      {/* Ambient Sound Mixer Popover */}
-      {showMixer && controlsOpen && (
-        <div className="fixed right-6 bottom-16 z-30 w-64 rounded-xl border border-[#E6C79C]/30 bg-[#1F140D]/90 p-4 text-[#FAF5EC] shadow-2xl backdrop-blur-xl">
-          <p className="mb-3 font-mono text-[11px] font-semibold tracking-wider text-[#E6C79C]">
-            AMBIENT MIXER
-          </p>
-          <div className="space-y-2.5">
-            {[
-              {
-                label: 'MUSIC',
-                val: musicVol,
-                set: (v: number) => handleMixerChange(v, rainVol, crackleVol),
-              },
-              {
-                label: 'RAIN',
-                val: rainVol,
-                set: (v: number) => handleMixerChange(musicVol, v, crackleVol),
-              },
-              {
-                label: 'CRACKLE',
-                val: crackleVol,
-                set: (v: number) => handleMixerChange(musicVol, rainVol, v),
-              },
-            ].map((row) => (
-              <label key={row.label} className="block">
-                <div className="mb-1 flex justify-between font-mono text-[10px] text-[#FAF5EC]/78">
-                  <span>{row.label}</span>
-                  <span>{Math.round(row.val * 100)}%</span>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={row.val}
-                  onChange={(e) => row.set(parseFloat(e.target.value))}
-                  className="w-full cursor-pointer accent-[#D4AA63]"
-                />
-              </label>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Subtle Hover Tooltip */}
-      {props.hoverLabel && (
-        <div className="pointer-events-none fixed bottom-16 left-1/2 z-30 -translate-x-1/2 rounded-md border border-[#E6C79C]/25 bg-[#1C120C]/85 px-3 py-1 font-mono text-[11px] text-[#FAF5EC] backdrop-blur-md">
-          {props.hoverLabel}
-        </div>
-      )}
-
-      {/* Bottom Corner Micro-Controls */}
-      <footer className="pointer-events-none fixed right-0 bottom-0 left-0 z-20 flex flex-wrap items-end justify-between gap-3 px-6 py-4">
-        {/* Bottom-Left: Pause/Resume + Ultra-Slim Proportional Seek Bar */}
-        <div className="pointer-events-auto flex items-center gap-2.5 text-[#FAF5EC] drop-shadow-[0_1px_6px_rgba(0,0,0,0.75)]">
-          <button
-            type="button"
-            onClick={props.onTogglePlay}
-            disabled={!hasRecord}
-            className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[#E6C79C]/45 bg-[#2A1A10]/65 backdrop-blur-md transition hover:border-[#FAF5EC] hover:bg-[#4A2E1B] disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label={props.isPlaying ? 'Pause' : 'Resume'}
-            title={props.isPlaying ? 'Pause' : 'Play / Resume'}
-          >
-            {props.isPlaying ? (
-              <Pause className="h-3 w-3 text-[#FAF5EC]" />
-            ) : (
-              <Play className="ml-0.5 h-3 w-3 text-[#FAF5EC]" />
-            )}
-          </button>
-
-          <div className="flex min-w-0 flex-col justify-center">
+        {/* Right Controls: Weather, Lamp, Audio/Mixer, Clock, Lo-Fi */}
+        <div className="pointer-events-auto relative flex flex-wrap items-center gap-1.5">
+          {/* Weather Selector */}
+          <div className="relative">
             <button
               type="button"
               onClick={() => {
-                if (hasRecord) props.onOpenLinerNotes();
-                else props.onChangeFocus('CRATE');
+                setWeatherOpen((prev) => !prev);
+                setMixerOpen(false);
               }}
-              className="block max-w-[240px] cursor-pointer truncate text-left leading-none transition hover:text-[#E6C79C] sm:max-w-[320px]"
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-2xl border border-[#E5D7C3]/85 bg-[#FAF5EC]/84 px-3 py-2 text-xs font-semibold text-[#241A13] shadow-[0_10px_28px_rgba(18,12,8,0.2)] backdrop-blur-xl transition hover:bg-[#FAF5EC]"
+              title="Change weather"
             >
-              <p className="truncate font-mono text-[11px] font-semibold tracking-wide text-[#FAF5EC]">
-                {props.activeVinyl ? (
-                  <>
-                    {displayTitle}
-                    <span className="font-normal text-[#FAF5EC]/72">
-                      {' '}
-                      - {props.activeVinyl.artist}
-                    </span>
-                  </>
-                ) : (
-                  <span className="text-[#FAF5EC]/75">
-                    No Record on Platter · Pick from Rack
-                  </span>
-                )}
-              </p>
+              <ActiveWeatherIcon className="h-3.5 w-3.5 text-[#7A5230]" />
+              <span className="hidden sm:inline">{activeWeatherInfo.label}</span>
             </button>
 
-            {/* Slim 2px Seekable Bar with Petite 6px Thumb aligned cleanly under the title */}
-            <div className="group relative mt-1.5 flex h-2 w-44 items-center sm:w-48">
-              <div className="pointer-events-none h-[2px] w-full overflow-hidden rounded-full bg-[#FAF5EC]/25 transition-all group-hover:h-[3px]">
-                <div
-                  className="h-full rounded-full bg-[#E6C79C] transition-[width] duration-75"
-                  style={{ width: `${Math.round(props.progressRatio * 100)}%` }}
-                />
+            {weatherOpen && (
+              <div className="absolute top-12 right-0 z-30 w-40 space-y-1 rounded-2xl border border-[#E5D7C3] bg-[#FAF5EC]/95 p-1.5 shadow-xl backdrop-blur-xl">
+                {WEATHER_OPTIONS.map((opt) => {
+                  const Icon = opt.Icon;
+                  const active = weather === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => {
+                        onChangeWeather(opt.id);
+                        setWeatherOpen(false);
+                      }}
+                      className={`flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold transition ${
+                        active
+                          ? 'bg-[#4A2E1B] text-[#FAF5EC]'
+                          : 'text-[#3A2213] hover:bg-[#EFE4D3]'
+                      }`}
+                    >
+                      <Icon className="h-3.5 w-3.5" />
+                      <span>{opt.label}</span>
+                    </button>
+                  );
+                })}
               </div>
-              <input
-                type="range"
-                min={0}
-                max={1000}
-                step={1}
-                disabled={!hasRecord}
-                value={Math.round(props.progressRatio * 1000)}
-                onChange={(e) => props.onSeekProgress(parseInt(e.target.value, 10) / 1000)}
-                aria-label="Seek track position"
-                className="absolute inset-0 -top-1.5 h-5 w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
-              />
-              {hasRecord && (
-                <span
-                  className="pointer-events-none absolute top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#FAF5EC] shadow-[0_0_4px_rgba(20,12,8,0.85)] transition-transform group-hover:scale-125"
-                  style={{ left: `${Math.round(props.progressRatio * 100)}%` }}
-                />
-              )}
-            </div>
+            )}
           </div>
-        </div>
 
-        {/* Bottom-Right: Collapsible Settings Row + Always-visible Back-to-Desk button */}
-        <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2 font-mono text-[10.5px] font-semibold tracking-wider text-[#FAF5EC]">
-          {props.cameraFocus !== 'DESK' && (
+          {/* Desk Lamp Toggle */}
+          <button
+            type="button"
+            onClick={onToggleLamp}
+            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-2xl border px-3 py-2 text-xs font-semibold shadow-[0_10px_28px_rgba(18,12,8,0.2)] backdrop-blur-xl transition ${
+              lampOn
+                ? 'border-[#C89B54]/70 bg-[#4A2E1B] text-[#FAF5EC]'
+                : 'border-[#E5D7C3]/85 bg-[#FAF5EC]/84 text-[#241A13] hover:bg-[#FAF5EC]'
+            }`}
+            title={lampOn ? 'Turn off desk lamp' : 'Turn on desk lamp'}
+          >
+            <LampDesk className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">{lampOn ? 'Lamp On' : 'Lamp Off'}</span>
+          </button>
+
+          {/* Time Scrubber Toggle */}
+          <button
+            type="button"
+            onClick={onToggleTimeScrubber}
+            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-2xl border px-3 py-2 font-mono text-[11px] font-semibold shadow-[0_10px_28px_rgba(18,12,8,0.2)] backdrop-blur-xl transition ${
+              showTimeScrubber
+                ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
+                : 'border-[#E5D7C3]/85 bg-[#FAF5EC]/84 text-[#241A13] hover:bg-[#FAF5EC]'
+            }`}
+            title="Adjust room time of day"
+          >
+            <Clock className="h-3.5 w-3.5" />
+            <span>{formatClock(hourDecimal)}</span>
+          </button>
+
+          {/* Sound Toggle & Ambient Mixer */}
+          <div className="relative flex items-center gap-1 rounded-2xl border border-[#E5D7C3]/85 bg-[#FAF5EC]/84 p-1 shadow-[0_10px_28px_rgba(18,12,8,0.2)] backdrop-blur-xl">
             <button
               type="button"
-              onClick={() => props.onChangeFocus('DESK')}
-              className="cursor-pointer rounded-lg border border-[#E6C79C]/45 bg-[#2A1A10]/80 px-2.5 py-1 backdrop-blur-md transition hover:bg-[#4A2E1B]"
+              onClick={onToggleSound}
+              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-xl text-[#4A2E1B] transition hover:bg-[#4A2E1B]/10"
+              title={soundEnabled ? 'Mute audio' : 'Unmute audio'}
+              aria-label={soundEnabled ? 'Mute audio' : 'Unmute audio'}
             >
-              {props.cameraFocus === 'NOTES'
-                ? 'PUT DOWN NOTEPAD · ESC'
-                : props.cameraFocus === 'WALLET'
-                ? 'CLOSE WALLET · ESC'
-                : 'BACK TO DESK · ESC'}
+              {soundEnabled ? (
+                <Volume2 className="h-3.5 w-3.5" />
+              ) : (
+                <VolumeX className="h-3.5 w-3.5 text-[#8A7360]" />
+              )}
             </button>
-          )}
+            <button
+              type="button"
+              onClick={() => {
+                setMixerOpen((prev) => !prev);
+                setWeatherOpen(false);
+              }}
+              className={`flex h-7 w-7 cursor-pointer items-center justify-center rounded-xl transition ${
+                mixerOpen
+                  ? 'bg-[#4A2E1B] text-[#FAF5EC]'
+                  : 'text-[#4A2E1B] hover:bg-[#4A2E1B]/10'
+              }`}
+              title="Ambient sound mixer"
+              aria-label="Ambient sound mixer"
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+            </button>
 
-          {controlsOpen && (
-            <div className="flex flex-wrap items-center gap-1.5">
+            {mixerOpen && (
+              <div className="absolute top-12 right-0 z-30 w-60 space-y-3 rounded-2xl border border-[#E5D7C3] bg-[#FAF5EC]/95 p-4 text-[#241A13] shadow-xl backdrop-blur-xl">
+                <p className="font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
+                  SOUND MIXER
+                </p>
+
+                <label className="block">
+                  <div className="flex justify-between font-mono text-[10px] text-[#5C4432]">
+                    <span>Music</span>
+                    <span>{Math.round(musicVol * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.02}
+                    value={musicVol}
+                    onChange={(e) =>
+                      handleVolumeChange(parseFloat(e.target.value), rainVol, crackleVol)
+                    }
+                    className="mt-1 w-full cursor-pointer accent-[#4A2E1B]"
+                  />
+                </label>
+
+                <label className="block">
+                  <div className="flex justify-between font-mono text-[10px] text-[#5C4432]">
+                    <span>Rain Ambience</span>
+                    <span>{Math.round(rainVol * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.02}
+                    value={rainVol}
+                    onChange={(e) =>
+                      handleVolumeChange(musicVol, parseFloat(e.target.value), crackleVol)
+                    }
+                    className="mt-1 w-full cursor-pointer accent-[#4A2E1B]"
+                  />
+                </label>
+
+                <label className="block">
+                  <div className="flex justify-between font-mono text-[10px] text-[#5C4432]">
+                    <span>Vinyl Crackle</span>
+                    <span>{Math.round(crackleVol * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.02}
+                    value={crackleVol}
+                    onChange={(e) =>
+                      handleVolumeChange(musicVol, rainVol, parseFloat(e.target.value))
+                    }
+                    className="mt-1 w-full cursor-pointer accent-[#4A2E1B]"
+                  />
+                </label>
+              </div>
+            )}
+          </div>
+
+          {/* Switch to Lo-Fi Catalog */}
+          <button
+            type="button"
+            onClick={onSwitchToLofi}
+            className="inline-flex cursor-pointer items-center gap-1.5 rounded-2xl border border-[#E5D7C3]/85 bg-[#FAF5EC]/84 px-3 py-2 text-xs font-semibold text-[#4A2E1B] shadow-[0_10px_28px_rgba(18,12,8,0.2)] backdrop-blur-xl transition hover:bg-[#FAF5EC]"
+            title="Switch to Lo-Fi Catalog View"
+          >
+            <LayoutGrid className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Lo-Fi View</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Floating Center Hover Hint or Time Scrubber */}
+      <div className="flex flex-col items-center gap-2">
+        {showTimeScrubber && (
+          <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-[#E5D7C3] bg-[#FAF5EC]/92 px-4 py-3 text-[#241A13] shadow-xl backdrop-blur-xl">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 font-mono text-[10.5px] font-semibold text-[#5C4432] uppercase">
+                <Clock className="h-3.5 w-3.5 text-[#7A5230]" />
+                <span>
+                  {formatClock(hourDecimal)} · {phaseLabel}
+                </span>
+              </div>
+              {!isLiveTime && (
+                <button
+                  type="button"
+                  onClick={onResetLiveTime}
+                  className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#4A2E1B]/20 bg-white px-2 py-0.5 font-mono text-[9.5px] font-semibold text-[#4A2E1B] hover:bg-[#EFE4D3]"
+                >
+                  <RotateCcw className="h-2.5 w-2.5" />
+                  <span>Live Time</span>
+                </button>
+              )}
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={23.95}
+              step={0.05}
+              value={hourDecimal}
+              onChange={(e) => onScrubHour(parseFloat(e.target.value))}
+              aria-label="Time of day scrubber"
+              className="mt-2 w-full cursor-pointer accent-[#4A2E1B]"
+            />
+          </div>
+        )}
+
+        {hoverLabel && (
+          <div className="rounded-full border border-[#E5D7C3]/80 bg-[#1B130D]/78 px-3.5 py-1.5 font-mono text-[10.5px] font-medium tracking-wide text-[#FAF5EC] shadow-lg backdrop-blur-md">
+            {hoverLabel}
+          </div>
+        )}
+      </div>
+
+      {/* Bottom Bar: Left Now Playing Player & Right Quick Actions */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        {/* Bottom-Left Compact Player (Prev/Next shown ONLY when release has > 1 track) */}
+        <div className="pointer-events-auto w-full max-w-sm rounded-[22px] border border-[#E5D7C3]/90 bg-[#FAF5EC]/86 p-3 text-[#241A13] shadow-[0_18px_44px_rgba(14,9,5,0.34)] backdrop-blur-xl">
+          {activeVinyl ? (
+            <div className="space-y-2.5">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={onOpenLinerNotes}
+                  className="relative h-12 w-12 shrink-0 cursor-pointer overflow-hidden rounded-xl border border-black/10 bg-[#18110C] shadow-xs"
+                  title="Open liner notes"
+                >
+                  <img
+                    src={coverSrc}
+                    alt={activeVinyl.title}
+                    className="h-full w-full object-cover"
+                  />
+                </button>
+
+                <div className="min-w-0 flex-1">
+                  <p className="inline-flex items-center gap-1 font-mono text-[9px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
+                    <Music2 className="h-2.5 w-2.5" />
+                    {isPlaying ? 'Now Playing' : 'On Turntable'}
+                  </p>
+                  <p className="truncate font-serif text-lg leading-tight text-[#241A13]">
+                    {activeTrack ? activeTrack.title : activeVinyl.title}
+                  </p>
+                  <p className="truncate text-[11px] text-[#655040]">
+                    {activeVinyl.artist}
+                    {activeTrack ? ` · ${activeVinyl.title}` : ''}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={onOpenLinerNotes}
+                  className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-xl border border-[#4A2E1B]/16 bg-white/85 text-[#4A2E1B] transition hover:bg-white"
+                  title="Liner notes & tracklist"
+                  aria-label="Open liner notes"
+                >
+                  <BookOpen className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              {/* Playback Controls + Seek Bar */}
+              <div className="flex items-center gap-2">
+                <div className="flex shrink-0 items-center gap-1.5">
+                  {showTrackNav && onPrevTrack && (
+                    <button
+                      type="button"
+                      onClick={onPrevTrack}
+                      className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white/90 text-[#4A2E1B] shadow-xs transition hover:bg-[#EFE4D3]"
+                      aria-label="Previous track"
+                      title="Previous track"
+                    >
+                      <SkipBack className="h-3 w-3 fill-current" />
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={onTogglePlay}
+                    className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#4A2E1B] text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213]"
+                    aria-label={isPlaying ? 'Pause' : 'Play'}
+                  >
+                    {isPlaying ? (
+                      <Pause className="h-3.5 w-3.5" />
+                    ) : (
+                      <Play className="ml-0.5 h-3.5 w-3.5" />
+                    )}
+                  </button>
+
+                  {showTrackNav && onNextTrack && (
+                    <button
+                      type="button"
+                      onClick={onNextTrack}
+                      className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white/90 text-[#4A2E1B] shadow-xs transition hover:bg-[#EFE4D3]"
+                      aria-label="Next track"
+                      title="Next track"
+                    >
+                      <SkipForward className="h-3 w-3 fill-current" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="relative flex flex-1 items-center">
+                  <div className="pointer-events-none h-1.5 w-full overflow-hidden rounded-full bg-[#4A2E1B]/15">
+                    <div
+                      className="h-full rounded-full bg-[#4A2E1B] transition-[width] duration-150"
+                      style={{ width: `${Math.round(progressRatio * 100)}%` }}
+                    />
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.005}
+                    value={progressRatio}
+                    onChange={(e) => onSeekProgress(parseFloat(e.target.value))}
+                    aria-label="Seek playback"
+                    className="absolute inset-0 h-5 w-full -translate-y-1.5 cursor-pointer opacity-0"
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-3 py-1">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#4A2E1B]/12 text-[#4A2E1B]">
+                  <Disc3 className="h-5 w-5" />
+                </div>
+                <div>
+                  <p className="font-mono text-[9.5px] font-semibold tracking-wider text-[#7A5230] uppercase">
+                    EMPTY PLATTER
+                  </p>
+                  <p className="text-xs font-medium text-[#5C4432]">
+                    Pick a vinyl from the rack to play
+                  </p>
+                </div>
+              </div>
               <button
                 type="button"
-                onClick={props.onToggleTimeScrubber}
-                className="cursor-pointer rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
+                onClick={onOpenCollection}
+                className="cursor-pointer rounded-xl bg-[#4A2E1B] px-3 py-1.5 text-[11px] font-semibold text-[#FAF5EC] transition hover:bg-[#3A2213]"
               >
-                {formattedTime} {props.isLiveTime ? 'LIVE' : 'SCRUB'}
-              </button>
-
-              <button
-                type="button"
-                onClick={nextWeather}
-                className="cursor-pointer rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
-              >
-                {props.weather}
-              </button>
-
-              <button
-                type="button"
-                onClick={props.onToggleLamp}
-                className="cursor-pointer rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
-              >
-                LAMP {props.lampOn ? 'ON' : 'OFF'}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowMixer((prev) => !prev)}
-                className={`cursor-pointer rounded-lg border px-2.5 py-1 backdrop-blur-md transition ${
-                  showMixer
-                    ? 'border-[#E6C79C] bg-[#4A2E1B]'
-                    : 'border-[#FAF5EC]/25 bg-[#2A1A10]/65 hover:border-[#E6C79C] hover:bg-[#4A2E1B]'
-                }`}
-                title="Ambient Sound Mixer"
-              >
-                <SlidersHorizontal className="h-3.5 w-3.5" />
-              </button>
-
-              <button
-                type="button"
-                onClick={props.onSwitchToLofi}
-                className="cursor-pointer rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
-              >
-                LO-FI
-              </button>
-
-              <button
-                type="button"
-                onClick={props.onToggleSound}
-                className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#FAF5EC]/25 bg-[#2A1A10]/65 px-2.5 py-1 backdrop-blur-md transition hover:border-[#E6C79C] hover:bg-[#4A2E1B]"
-              >
-                {props.soundEnabled ? (
-                  <Volume2 className="h-3.5 w-3.5" />
-                ) : (
-                  <VolumeX className="h-3.5 w-3.5" />
-                )}
-                <span>{props.soundEnabled ? 'SOUND ON' : 'SOUND OFF'}</span>
+                Browse
               </button>
             </div>
           )}
+        </div>
+
+        {/* Bottom-Right Quick Modals: Collection & Pinboard */}
+        <div className="pointer-events-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenCollection}
+            className="inline-flex cursor-pointer items-center gap-2 rounded-2xl border border-[#E5D7C3]/90 bg-[#FAF5EC]/86 px-3.5 py-2.5 text-xs font-semibold text-[#241A13] shadow-[0_12px_32px_rgba(14,9,5,0.28)] backdrop-blur-xl transition hover:bg-[#FAF5EC]"
+          >
+            <Library className="h-3.5 w-3.5 text-[#7A5230]" />
+            <span>Collection</span>
+            <span className="rounded-full bg-[#4A2E1B]/12 px-1.5 py-0.5 font-mono text-[10px] font-bold text-[#4A2E1B]">
+              {vinylCount}
+            </span>
+          </button>
 
           <button
             type="button"
-            onClick={() => {
-              setControlsOpen((prev) => {
-                if (prev) setShowMixer(false);
-                return !prev;
-              });
-            }}
-            className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#E6C79C]/40 bg-[#4A2E1B]/85 px-2.5 py-1 text-[#FAF5EC] backdrop-blur-md transition hover:bg-[#3A2213]"
-            title={controlsOpen ? 'Tutup opsi pengaturan' : 'Buka opsi pengaturan'}
+            onClick={onOpenPinboard}
+            className="inline-flex cursor-pointer items-center gap-2 rounded-2xl border border-[#E5D7C3]/90 bg-[#FAF5EC]/86 px-3.5 py-2.5 text-xs font-semibold text-[#241A13] shadow-[0_12px_32px_rgba(14,9,5,0.28)] backdrop-blur-xl transition hover:bg-[#FAF5EC]"
           >
-            {controlsOpen ? (
-              <ChevronRight className="h-3.5 w-3.5" />
-            ) : (
-              <>
-                <Settings2 className="h-3.5 w-3.5" />
-                <span>OPTIONS</span>
-              </>
-            )}
+            <Pin className="h-3.5 w-3.5 text-[#7A5230]" />
+            <span>Pinboard</span>
+            <span className="rounded-full bg-[#4A2E1B]/12 px-1.5 py-0.5 font-mono text-[10px] font-bold text-[#4A2E1B]">
+              {postcardCount}
+            </span>
           </button>
         </div>
-      </footer>
-    </>
+      </div>
+    </div>
   );
 }

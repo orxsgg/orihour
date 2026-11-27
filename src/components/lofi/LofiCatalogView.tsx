@@ -6,6 +6,8 @@ import {
   Disc3,
   Play,
   Pause,
+  SkipBack,
+  SkipForward,
   Search,
   Star,
   Quote,
@@ -42,6 +44,8 @@ interface LofiCatalogViewProps {
   progressRatio: number;
   returnTarget?: 'ENTRY' | 'ROOM';
   onSelectAndPlay: (vinyl: VinylRecord, subTrack?: TrackItem | null) => void;
+  onPrevTrack?: () => void;
+  onNextTrack?: () => void;
   onSeekProgress: (ratio: number) => void;
   onReturnTo3D: () => void;
 }
@@ -63,6 +67,8 @@ export default function LofiCatalogView({
   progressRatio,
   returnTarget = 'ROOM',
   onSelectAndPlay,
+  onPrevTrack,
+  onNextTrack,
   onSeekProgress,
   onReturnTo3D,
 }: LofiCatalogViewProps) {
@@ -112,6 +118,8 @@ export default function LofiCatalogView({
 
   const returnLabel =
     returnTarget === 'ENTRY' ? 'Back to Welcome' : 'Return to 3D Room';
+
+  const activeHasMultiTracks = Boolean(activeVinyl && hasMultipleTracks(activeVinyl));
 
   return (
     <div
@@ -219,7 +227,7 @@ export default function LofiCatalogView({
           )}
         </section>
 
-        {/* Catalog Grid (items-start prevents sibling cards from stretching when one expands) */}
+        {/* Catalog Grid */}
         {filteredVinyls.length === 0 ? (
           <div className="rounded-[24px] border border-[#E5D7C3] bg-[#FAF5EC]/85 py-16 text-center font-mono text-xs text-[#7A624E]">
             No releases match your current search or filter.
@@ -254,7 +262,6 @@ export default function LofiCatalogView({
                   }`}
                 >
                   <div className="flex gap-4">
-                    {/* Cover Art with Play Overlay */}
                     <button
                       type="button"
                       onClick={() => onSelectAndPlay(v)}
@@ -281,7 +288,6 @@ export default function LofiCatalogView({
                       </span>
                     </button>
 
-                    {/* Primary Info */}
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="rounded-full bg-[#4A2E1B] px-2 py-0.5 font-mono text-[9px] font-semibold text-[#FAF5EC] uppercase">
@@ -362,7 +368,7 @@ export default function LofiCatalogView({
                     )}
                   </div>
 
-                  {/* Expanded Details: Favorite Lyric / Favorite Track + Curator Notes + Tracklist */}
+                  {/* Expanded Details */}
                   {isExpanded && (
                     <div className="mt-3 space-y-3 border-t border-[#4A2E1B]/10 pt-3">
                       {favLyric && (
@@ -461,7 +467,7 @@ export default function LofiCatalogView({
         )}
       </main>
 
-      {/* Sticky Bottom Now Playing Bar */}
+      {/* Sticky Bottom Now Playing Bar (Prev/Next shown ONLY when release has > 1 track) */}
       {activeVinyl && (
         <div className="fixed inset-x-0 bottom-0 z-40 border-t border-[#E5D7C3] bg-[#FAF5EC]/95 shadow-[0_-12px_36px_rgba(24,17,12,0.14)] backdrop-blur-xl">
           <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-4 py-3 sm:px-6">
@@ -477,7 +483,7 @@ export default function LofiCatalogView({
                   {isPlaying ? 'Now Playing' : 'Paused'}
                 </p>
                 <p className="truncate font-serif text-lg leading-tight text-[#241A13]">
-                  {activeTrack ? `${activeTrack.title}` : activeVinyl.title}
+                  {activeTrack ? activeTrack.title : activeVinyl.title}
                 </p>
                 <p className="truncate text-[11px] text-[#655040]">
                   {activeVinyl.artist}
@@ -486,19 +492,45 @@ export default function LofiCatalogView({
               </div>
             </div>
 
-            <div className="flex w-full items-center gap-3 sm:w-auto sm:min-w-[280px]">
-              <button
-                type="button"
-                onClick={() => onSelectAndPlay(activeVinyl, activeTrack)}
-                className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#4A2E1B] text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213]"
-                aria-label={isPlaying ? 'Pause' : 'Play'}
-              >
-                {isPlaying ? (
-                  <Pause className="h-4 w-4" />
-                ) : (
-                  <Play className="ml-0.5 h-4 w-4" />
+            <div className="flex w-full items-center gap-2.5 sm:w-auto sm:min-w-[300px]">
+              <div className="flex shrink-0 items-center gap-1.5">
+                {activeHasMultiTracks && onPrevTrack && (
+                  <button
+                    type="button"
+                    onClick={onPrevTrack}
+                    className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white text-[#4A2E1B] shadow-xs transition hover:bg-[#EFE4D3]"
+                    aria-label="Previous track"
+                    title="Previous track"
+                  >
+                    <SkipBack className="h-3.5 w-3.5 fill-current" />
+                  </button>
                 )}
-              </button>
+
+                <button
+                  type="button"
+                  onClick={() => onSelectAndPlay(activeVinyl, activeTrack)}
+                  className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#4A2E1B] text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213]"
+                  aria-label={isPlaying ? 'Pause' : 'Play'}
+                >
+                  {isPlaying ? (
+                    <Pause className="h-4 w-4" />
+                  ) : (
+                    <Play className="ml-0.5 h-4 w-4" />
+                  )}
+                </button>
+
+                {activeHasMultiTracks && onNextTrack && (
+                  <button
+                    type="button"
+                    onClick={onNextTrack}
+                    className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-[#4A2E1B]/20 bg-white text-[#4A2E1B] shadow-xs transition hover:bg-[#EFE4D3]"
+                    aria-label="Next track"
+                    title="Next track"
+                  >
+                    <SkipForward className="h-3.5 w-3.5 fill-current" />
+                  </button>
+                )}
+              </div>
 
               <div className="relative flex flex-1 items-center">
                 <div className="pointer-events-none h-1.5 w-full overflow-hidden rounded-full bg-[#4A2E1B]/15">

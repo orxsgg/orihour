@@ -1,96 +1,82 @@
-import { ClipMode, TrackItem, VinylRecord, WeatherType } from '@/types/orihour';
+import { TrackItem, VinylRecord, WeatherType } from '@/types/orihour';
+import {
+  connectRealtimeAudioEnhancer,
+  parseAudioEnhancePreset,
+  stripAudioEnhancePreset,
+} from '@/lib/audioEnhancer';
 
-export interface PlayableAudioSource {
-  id: string;
-  audioUrl?: string;
-  duration?: string;
-  clipMode?: ClipMode;
-  clipStartSec?: number;
-  clipEndSec?: number;
-}
-
-/**
- * Formats seconds into MM:SS (e.g., 218 -> "03:38").
- */
-export function formatDurationSeconds(totalSeconds: number): string {
-  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return '03:30';
-  const rounded = Math.round(totalSeconds);
-  const mins = Math.floor(rounded / 60);
-  const secs = rounded % 60;
+export function formatDurationSeconds(seconds: number): string {
+  const safe = Math.max(0, Math.round(seconds));
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
-/**
- * Reads an uploaded local MP3/audio file's duration in seconds in the browser.
- */
-export function extractAudioDurationSeconds(file: File): Promise<number | null> {
-  if (typeof window === 'undefined') return Promise.resolve(null);
+export async function extractAudioDurationSeconds(file: File): Promise<number | null> {
+  if (typeof window === 'undefined') return null;
 
   return new Promise((resolve) => {
     const objectUrl = URL.createObjectURL(file);
-    const audio = new Audio();
+    const audio = document.createElement('audio');
     audio.preload = 'metadata';
 
-    const cleanup = () => {
+    let settled = false;
+    const finish = (value: number | null) => {
+      if (settled) return;
+      settled = true;
       URL.revokeObjectURL(objectUrl);
-      audio.removeAttribute('src');
+      audio.src = '';
+      resolve(value);
     };
 
-    const timer = window.setTimeout(() => {
-      cleanup();
-      resolve(null);
-    }, 4500);
+    const timeout = window.setTimeout(() => finish(null), 5000);
 
     audio.onloadedmetadata = () => {
-      window.clearTimeout(timer);
-      const secs =
-        Number.isFinite(audio.duration) && audio.duration > 0
-          ? Math.round(audio.duration)
-          : null;
-      cleanup();
-      resolve(secs);
+      window.clearTimeout(timeout);
+      const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : null;
+      finish(dur);
     };
 
     audio.onerror = () => {
-      window.clearTimeout(timer);
-      cleanup();
-      resolve(null);
+      window.clearTimeout(timeout);
+      finish(null);
     };
 
     audio.src = objectUrl;
   });
 }
 
-/**
- * Reads an uploaded local MP3/audio file's exact duration formatted as MM:SS.
- */
-export async function extractAudioDuration(file: File): Promise<string | null> {
-  const secs = await extractAudioDurationSeconds(file);
-  return secs !== null ? formatDurationSeconds(secs) : null;
-}
+function createNoiseBuffer(
+  ctx: AudioContext,
+  durationSec: number,
+  mode: 'rain' | 'crackle'
+): AudioBuffer {
+  const sampleRate = ctx.sampleRate;
+  const length = Math.floor(sampleRate * durationSec);
+  const buffer = ctx.createBuffer(1, length, sampleRate);
+  const data = buffer.getChannelData(0);
 
-function parseDurationToSeconds(durationLabel?: string): number {
-  if (!durationLabel) return 180;
-  const parts = durationLabel.split(':').map((p) => parseInt(p.trim(), 10));
-  if (parts.length === 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
-    return Math.max(10, parts[0] * 60 + parts[1]);
+  if (mode === 'rain') {
+    let lastOut = 0;
+    for (let i = 0; i < length; i++) {
+      const white = Math.random() * 2 - 1;
+      lastOut = (lastOut + 0.03 * white) / 1.03;
+      data[i] = lastOut * 2.4;
+    }
+  } else {
+    for (let i = 0; i < length; i++) {
+      const r = Math.random();
+      if (r > 0.9985) {
+        data[i] = (Math.random() * 2 - 1) * 0.72;
+      } else if (r > 0.992) {
+        data[i] = (Math.random() * 2 - 1) * 0.16;
+      } else {
+        data[i] = (Math.random() * 2 - 1) * 0.012;
+      }
+    }
   }
-  return 180;
-}
 
-function resolvePlayWindow(
-  source: PlayableAudioSource,
-  totalSec: number
-): { start: number; end: number; span: number } {
-  const safeTotal = Math.max(5, totalSec);
-  if (source.clipMode === 'snippet') {
-    const rawStart = Math.max(0, Number(source.clipStartSec) || 0);
-    const start = Math.min(rawStart, Math.max(0, safeTotal - 3));
-    const rawEnd = Number(source.clipEndSec) || start + 30;
-    const end = Math.min(safeTotal, Math.max(start + 3, rawEnd));
-    return { start, end, span: Math.max(1, end - start) };
-  }
-  return { start: 0, end: safeTotal, span: safeTotal };
+  return buffer;
 }
 
 class OrihourAudioEngine {
@@ -99,38 +85,35 @@ class OrihourAudioEngine {
   private musicGain: GainNode | null = null;
   private rainGain: GainNode | null = null;
   private crackleGain: GainNode | null = null;
-
-  private crackleSource: AudioBufferSourceNode | null = null;
   private rainSource: AudioBufferSourceNode | null = null;
-  private rainFilter: BiquadFilterNode | null = null;
+  private crackleSource: AudioBufferSourceNode | null = null;
 
-  // Real MP3 HTMLAudioElement playback
-  private audioEl: HTMLAudioElement | null = null;
-  private rafId: number | null = null;
-  private activeSource: PlayableAudioSource | null = null;
-  private windowStart = 0;
-  private windowEnd = 180;
-  private windowSpan = 180;
-
-  // Fallback procedural analog chord timer
-  private synthTimer: number | null = null;
-  private synthProgressTimer: number | null = null;
-  private synthChords: number[][] = [];
-  private synthStep = 0;
-  private synthElapsedSec = 0;
-  private synthLastTick = 0;
-
-  private isSoundEnabled = true;
-  private isPlayingRecord = false;
-  private isPausedRecord = false;
+  private soundEnabled = true;
+  private musicVol = 0.78;
+  private rainVol = 0.35;
+  private crackleVol = 0.22;
   private currentWeather: WeatherType = 'CLEAR';
 
-  private musicVolume = 0.72;
-  private rainVolume = 0.36;
-  private crackleVolume = 0.24;
+  private audioEl: HTMLAudioElement | null = null;
+  private audioElRoutedToWebAudio = false;
+  private currentSourceKey: string | null = null;
+  private isPausedState = false;
 
-  private activeProgressCb: ((ratio: number) => void) | null = null;
-  private activeEndedCb: (() => void) | null = null;
+  private clipMode: 'full' | 'snippet' = 'full';
+  private clipStartSec = 0;
+  private clipEndSec = 30;
+  private progressRaf: number | null = null;
+  private onProgressCb: ((ratio: number) => void) | null = null;
+  private onEndedCb: (() => void) | null = null;
+
+  // Procedural analog fallback when a vinyl has no uploaded MP3
+  private synthActive = false;
+  private synthInterval: number | null = null;
+  private synthStepIndex = 0;
+  private synthStartedAtMs = 0;
+  private synthPausedOffsetSec = 0;
+  private synthTotalSec = 42;
+  private synthVinyl: VinylRecord | null = null;
 
   private ensureContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
@@ -138,28 +121,32 @@ class OrihourAudioEngine {
     if (!this.ctx) {
       const AudioCtx =
         window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtx) return null;
 
-      this.ctx = new AudioCtx();
-      this.masterGain = this.ctx.createGain();
-      this.musicGain = this.ctx.createGain();
-      this.rainGain = this.ctx.createGain();
-      this.crackleGain = this.ctx.createGain();
+      const ctx = new AudioCtx();
+      const master = ctx.createGain();
+      const music = ctx.createGain();
+      const rain = ctx.createGain();
+      const crackle = ctx.createGain();
 
-      // Strictly initialize all gains to 0 to eliminate initial WebAudio pop ("dor")
-      this.masterGain.gain.value = 0;
-      this.musicGain.gain.value = 0;
-      this.rainGain.gain.value = 0;
-      this.crackleGain.gain.value = 0;
+      master.gain.value = this.soundEnabled ? 1 : 0;
+      music.gain.value = this.musicVol;
+      rain.gain.value = 0;
+      crackle.gain.value = this.crackleVol * 0.14;
 
-      this.musicGain.connect(this.masterGain);
-      this.rainGain.connect(this.masterGain);
-      this.crackleGain.connect(this.masterGain);
-      this.masterGain.connect(this.ctx.destination);
+      music.connect(master);
+      rain.connect(master);
+      crackle.connect(master);
+      master.connect(ctx.destination);
+
+      this.ctx = ctx;
+      this.masterGain = master;
+      this.musicGain = music;
+      this.rainGain = rain;
+      this.crackleGain = crackle;
 
       this.startAmbientLoops();
-      this.applyGains();
     }
 
     if (this.ctx.state === 'suspended') {
@@ -170,499 +157,474 @@ class OrihourAudioEngine {
   }
 
   private startAmbientLoops() {
-    if (!this.ctx || !this.crackleGain || !this.rainGain) return;
+    if (!this.ctx || !this.rainGain || !this.crackleGain) return;
 
-    const sampleRate = this.ctx.sampleRate;
+    try {
+      if (!this.rainSource) {
+        const rainBuf = createNoiseBuffer(this.ctx, 4.0, 'rain');
+        const src = this.ctx.createBufferSource();
+        src.buffer = rainBuf;
+        src.loop = true;
 
-    // 1. Subtle Vinyl Crackle & Warm Analog Floor Loop (4s seamless buffer)
-    const crackleLen = sampleRate * 4;
-    const crackleBuf = this.ctx.createBuffer(1, crackleLen, sampleRate);
-    const cData = crackleBuf.getChannelData(0);
-    for (let i = 0; i < crackleLen; i++) {
-      const baseHiss = (Math.random() * 2 - 1) * 0.014;
-      const pop = Math.random() > 0.9995 ? (Math.random() * 2 - 1) * 0.34 : 0;
-      const dust = Math.random() > 0.9975 ? (Math.random() * 2 - 1) * 0.09 : 0;
-      cData[i] = baseHiss + pop + dust;
+        const lp = this.ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 1150;
+
+        src.connect(lp);
+        lp.connect(this.rainGain);
+        src.start();
+        this.rainSource = src;
+      }
+
+      if (!this.crackleSource) {
+        const crackleBuf = createNoiseBuffer(this.ctx, 3.5, 'crackle');
+        const src = this.ctx.createBufferSource();
+        src.buffer = crackleBuf;
+        src.loop = true;
+
+        const hp = this.ctx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = 1800;
+
+        src.connect(hp);
+        hp.connect(this.crackleGain);
+        src.start();
+        this.crackleSource = src;
+      }
+    } catch {
+      // Ignore autoplay restrictions until user gesture
     }
-
-    const crackleSrc = this.ctx.createBufferSource();
-    crackleSrc.buffer = crackleBuf;
-    crackleSrc.loop = true;
-
-    const crackleHp = this.ctx.createBiquadFilter();
-    crackleHp.type = 'highpass';
-    crackleHp.frequency.value = 1150;
-
-    crackleSrc.connect(crackleHp);
-    crackleHp.connect(this.crackleGain);
-    crackleSrc.start();
-    this.crackleSource = crackleSrc;
-
-    // 2. Soft Rain / Breeze Ambience Loop (4s pink-filtered noise)
-    const rainLen = sampleRate * 4;
-    const rainBuf = this.ctx.createBuffer(1, rainLen, sampleRate);
-    const rData = rainBuf.getChannelData(0);
-    let b0 = 0;
-    let b1 = 0;
-    let b2 = 0;
-    for (let i = 0; i < rainLen; i++) {
-      const white = Math.random() * 2 - 1;
-      b0 = 0.997 * b0 + white * 0.029;
-      b1 = 0.985 * b1 + white * 0.032;
-      b2 = 0.95 * b2 + white * 0.048;
-      rData[i] = (b0 + b1 + b2 + white * 0.04) * 0.35;
-    }
-
-    const rainSrc = this.ctx.createBufferSource();
-    rainSrc.buffer = rainBuf;
-    rainSrc.loop = true;
-
-    const rainLp = this.ctx.createBiquadFilter();
-    rainLp.type = 'lowpass';
-    rainLp.frequency.value = 1450;
-
-    rainSrc.connect(rainLp);
-    rainLp.connect(this.rainGain);
-    rainSrc.start();
-    this.rainSource = rainSrc;
-    this.rainFilter = rainLp;
   }
 
-  private applyGains() {
-    if (this.audioEl) {
-      this.audioEl.volume = this.isSoundEnabled ? Math.max(0, Math.min(1, this.musicVolume)) : 0;
-    }
-
-    if (!this.ctx || !this.masterGain || !this.musicGain || !this.rainGain || !this.crackleGain) {
-      return;
-    }
-
-    const now = this.ctx.currentTime;
-    const masterTarget = this.isSoundEnabled ? 1.0 : 0.0;
-    this.masterGain.gain.setTargetAtTime(masterTarget, now, 0.08);
-
-    this.musicGain.gain.setTargetAtTime(this.musicVolume * 0.45, now, 0.08);
-
-    const crackleActive =
-      this.isPlayingRecord && !this.isPausedRecord ? this.crackleVolume * 0.32 : 0.0;
-    this.crackleGain.gain.setTargetAtTime(crackleActive, now, 0.14);
-
-    let weatherMult = 0.0;
-    if (this.currentWeather === 'RAIN') {
-      weatherMult = 1.0;
-      if (this.rainFilter) this.rainFilter.frequency.setTargetAtTime(1550, now, 0.2);
-    } else if (this.currentWeather === 'BREEZY') {
-      weatherMult = 0.24;
-      if (this.rainFilter) this.rainFilter.frequency.setTargetAtTime(520, now, 0.2);
-    }
-    this.rainGain.gain.setTargetAtTime(this.rainVolume * 0.55 * weatherMult, now, 0.24);
-  }
-
-  public unlockAndInit(soundOn: boolean) {
-    this.isSoundEnabled = soundOn;
+  public unlockAndInit(withSound = true) {
+    this.soundEnabled = withSound;
     this.ensureContext();
-    this.applyGains();
+    this.applyGainTargets();
   }
 
   public setSoundEnabled(enabled: boolean) {
-    this.isSoundEnabled = enabled;
-    if (enabled) this.ensureContext();
-    this.applyGains();
+    this.soundEnabled = enabled;
+    this.applyGainTargets();
   }
 
   public setVolumes(music: number, rain: number, crackle: number) {
-    this.musicVolume = Math.max(0, Math.min(1, music));
-    this.rainVolume = Math.max(0, Math.min(1, rain));
-    this.crackleVolume = Math.max(0, Math.min(1, crackle));
-    this.applyGains();
+    this.musicVol = Math.max(0, Math.min(1, music));
+    this.rainVol = Math.max(0, Math.min(1, rain));
+    this.crackleVol = Math.max(0, Math.min(1, crackle));
+    this.applyGainTargets();
   }
 
   public syncWeatherAmbience(weather: WeatherType) {
     this.currentWeather = weather;
-    this.applyGains();
+    this.applyGainTargets();
+  }
+
+  private applyGainTargets() {
+    if (this.ctx && this.masterGain && this.musicGain && this.rainGain && this.crackleGain) {
+      const now = this.ctx.currentTime;
+      this.masterGain.gain.setTargetAtTime(this.soundEnabled ? 1 : 0, now, 0.06);
+      this.musicGain.gain.setTargetAtTime(this.musicVol, now, 0.05);
+
+      const weatherRainFactor =
+        this.currentWeather === 'RAIN'
+          ? 0.42
+          : this.currentWeather === 'BREEZY'
+          ? 0.12
+          : this.currentWeather === 'CLOUDY'
+          ? 0.04
+          : 0;
+      this.rainGain.gain.setTargetAtTime(this.rainVol * weatherRainFactor, now, 0.25);
+
+      const isRecordSpinning =
+        (Boolean(this.audioEl) && !this.isPausedState) || this.synthActive;
+      const crackleScale = isRecordSpinning ? 0.24 : 0.05;
+      this.crackleGain.gain.setTargetAtTime(this.crackleVol * crackleScale, now, 0.15);
+    }
+
+    if (this.audioEl && !this.audioElRoutedToWebAudio) {
+      this.audioEl.volume = this.soundEnabled ? this.musicVol : 0;
+    }
   }
 
   public triggerNeedleDrop() {
-    if (!this.isSoundEnabled) return;
+    if (!this.soundEnabled) return;
     const ctx = this.ensureContext();
     if (!ctx || !this.masterGain) return;
 
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const thumpGain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(102, now);
-    osc.frequency.exponentialRampToValueAtTime(42, now + 0.075);
-
-    // Soft tactile thump (gentle level so it never sounds like a loud bang)
-    thumpGain.gain.setValueAtTime(0.0001, now);
-    thumpGain.gain.linearRampToValueAtTime(0.11 * this.crackleVolume + 0.035, now + 0.015);
-    thumpGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
-
-    osc.connect(thumpGain);
-    thumpGain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + 0.13);
-  }
-
-  /**
-   * Plays a VinylRecord or a specific TrackItem (supporting full song or partial snippet clip).
-   */
-  public playRecord(
-    vinyl: VinylRecord,
-    onProgress?: (ratio: number) => void,
-    onEnded?: () => void,
-    trackOverride?: TrackItem | null
-  ) {
-    const source: PlayableAudioSource = trackOverride
-      ? {
-          id: `${vinyl.id}:${trackOverride.id}`,
-          audioUrl: trackOverride.audioUrl || vinyl.audioUrl,
-          duration: trackOverride.duration || vinyl.duration,
-          clipMode: trackOverride.clipMode ?? vinyl.clipMode ?? 'full',
-          clipStartSec: trackOverride.clipStartSec ?? vinyl.clipStartSec ?? 0,
-          clipEndSec: trackOverride.clipEndSec ?? vinyl.clipEndSec ?? 30,
-        }
-      : {
-          id: vinyl.id,
-          audioUrl: vinyl.audioUrl,
-          duration: vinyl.duration,
-          clipMode: vinyl.clipMode ?? 'full',
-          clipStartSec: vinyl.clipStartSec ?? 0,
-          clipEndSec: vinyl.clipEndSec ?? 30,
-        };
-
-    this.playSource(source, onProgress, onEnded);
-  }
-
-  public playSource(
-    source: PlayableAudioSource,
-    onProgress?: (ratio: number) => void,
-    onEnded?: () => void
-  ) {
-    this.stopRecord();
-    this.ensureContext();
-
-    this.activeSource = source;
-    this.isPlayingRecord = true;
-    this.isPausedRecord = false;
-    this.activeProgressCb = onProgress ?? null;
-    this.activeEndedCb = onEnded ?? null;
-
-    const estimatedTotal = parseDurationToSeconds(source.duration);
-    const win = resolvePlayWindow(source, estimatedTotal);
-    this.windowStart = win.start;
-    this.windowEnd = win.end;
-    this.windowSpan = win.span;
-
-    this.applyGains();
-
-    const cleanUrl = source.audioUrl?.trim();
-    if (cleanUrl) {
-      this.playHtmlAudio(cleanUrl, source);
-    } else {
-      this.playProceduralFallback(source);
-    }
-  }
-
-  public pauseRecord() {
-    if (!this.isPlayingRecord || this.isPausedRecord) return;
-    this.isPausedRecord = true;
-
-    if (this.audioEl) {
-      this.audioEl.pause();
-      if (this.rafId !== null && typeof window !== 'undefined') {
-        window.cancelAnimationFrame(this.rafId);
-        this.rafId = null;
-      }
-    }
-
-    if (this.synthTimer !== null && typeof window !== 'undefined') {
-      window.clearInterval(this.synthTimer);
-      this.synthTimer = null;
-    }
-    if (this.synthProgressTimer !== null && typeof window !== 'undefined') {
-      window.clearInterval(this.synthProgressTimer);
-      this.synthProgressTimer = null;
-    }
-
-    this.applyGains();
-  }
-
-  public resumeRecord(): boolean {
-    if (!this.activeSource || !this.isPausedRecord) return false;
-
-    this.ensureContext();
-    this.isPausedRecord = false;
-    this.isPlayingRecord = true;
-    this.applyGains();
-
-    if (this.audioEl) {
-      const audio = this.audioEl;
-      audio
-        .play()
-        .then(() => {
-          if (this.audioEl === audio && this.isPlayingRecord && !this.isPausedRecord) {
-            this.startHtmlAudioTick(audio);
-          }
-        })
-        .catch(() => {});
-      return true;
-    }
-
-    // Resume procedural fallback from saved synthElapsedSec
-    this.startSynthTimers();
-    return true;
-  }
-
-  public hasPausedSource(sourceId: string): boolean {
-    return Boolean(this.isPausedRecord && this.activeSource?.id === sourceId);
-  }
-
-  /**
-   * Seeks smoothly to any normalized position (0..1) within the active track or snippet window.
-   */
-  public seekToRatio(ratio: number) {
-    const clamped = Math.max(0, Math.min(1, ratio));
-
-    if (this.audioEl) {
-      const targetSec = this.windowStart + clamped * this.windowSpan;
-      const safeMax = Number.isFinite(this.audioEl.duration)
-        ? Math.max(0, this.audioEl.duration - 0.15)
-        : this.windowEnd;
-      try {
-        this.audioEl.currentTime = Math.max(0, Math.min(safeMax, targetSec));
-      } catch {
-        // Ignore seek errors before metadata loads
-      }
-    } else if (this.activeSource) {
-      this.synthElapsedSec = clamped * this.windowSpan;
-      this.synthLastTick = performance.now();
-    }
-
-    this.activeProgressCb?.(clamped);
-  }
-
-  private startHtmlAudioTick(audio: HTMLAudioElement) {
-    if (typeof window === 'undefined') return;
-    if (this.rafId !== null) {
-      window.cancelAnimationFrame(this.rafId);
-      this.rafId = null;
-    }
-
-    const tick = () => {
-      if (!this.audioEl || this.audioEl !== audio || !this.isPlayingRecord || this.isPausedRecord) {
-        return;
-      }
-
-      const cur = audio.currentTime;
-      if (this.activeSource?.clipMode === 'snippet' && cur >= this.windowEnd) {
-        const endedCb = this.activeEndedCb;
-        this.stopRecord();
-        endedCb?.();
-        return;
-      }
-
-      const ratio = Math.max(0, Math.min(1, (cur - this.windowStart) / Math.max(0.5, this.windowSpan)));
-      this.activeProgressCb?.(ratio);
-      this.rafId = window.requestAnimationFrame(tick);
-    };
-
-    this.rafId = window.requestAnimationFrame(tick);
-  }
-
-  private playHtmlAudio(url: string, source: PlayableAudioSource) {
-    if (typeof window === 'undefined') return;
-
-    const audio = new Audio();
-    audio.preload = 'auto';
-    audio.src = url;
-    audio.volume = this.isSoundEnabled ? Math.max(0, Math.min(1, this.musicVolume)) : 0;
-    this.audioEl = audio;
-
-    audio.onloadedmetadata = () => {
-      if (this.audioEl !== audio) return;
-      if (Number.isFinite(audio.duration) && audio.duration > 0) {
-        const win = resolvePlayWindow(source, audio.duration);
-        this.windowStart = win.start;
-        this.windowEnd = win.end;
-        this.windowSpan = win.span;
-        if (win.start > 0 && audio.currentTime < win.start) {
-          try {
-            audio.currentTime = win.start;
-          } catch {
-            // Ignore seek failure
-          }
-        }
-      }
-    };
-
-    audio.onended = () => {
-      if (this.audioEl !== audio) return;
-      const endedCb = this.activeEndedCb;
-      this.stopRecord();
-      endedCb?.();
-    };
-
-    audio.onerror = () => {
-      if (this.audioEl !== audio) return;
-      this.cleanupHtmlAudio();
-      if (this.isPlayingRecord && !this.isPausedRecord) {
-        this.playProceduralFallback(source);
-      }
-    };
-
-    audio
-      .play()
-      .then(() => {
-        if (this.audioEl === audio && this.isPlayingRecord && !this.isPausedRecord) {
-          if (this.windowStart > 0 && audio.currentTime < this.windowStart) {
-            try {
-              audio.currentTime = this.windowStart;
-            } catch {
-              // Ignore seek failure
-            }
-          }
-          this.startHtmlAudioTick(audio);
-        }
-      })
-      .catch(() => {
-        if (this.audioEl === audio && this.isPlayingRecord && !this.isPausedRecord) {
-          this.cleanupHtmlAudio();
-          this.playProceduralFallback(source);
-        }
-      });
-  }
-
-  private playProceduralFallback(source: PlayableAudioSource) {
-    if (typeof window === 'undefined') return;
-
-    this.synthElapsedSec = 0;
-    this.synthLastTick = performance.now();
-
-    let seed = 0;
-    for (let i = 0; i < source.id.length; i++) {
-      seed = (seed * 31 + source.id.charCodeAt(i)) % 997;
-    }
-
-    const progressions: number[][][] = [
-      [
-        [220.0, 261.63, 329.63, 392.0],
-        [174.61, 220.0, 261.63, 329.63],
-        [196.0, 246.94, 293.66, 349.23],
-        [164.81, 196.0, 246.94, 329.63],
-      ],
-      [
-        [261.63, 329.63, 392.0, 493.88],
-        [220.0, 261.63, 329.63, 392.0],
-        [146.83, 220.0, 261.63, 349.23],
-        [196.0, 246.94, 293.66, 392.0],
-      ],
-      [
-        [196.0, 233.08, 293.66, 349.23],
-        [155.56, 196.0, 233.08, 293.66],
-        [174.61, 220.0, 261.63, 349.23],
-        [146.83, 174.61, 220.0, 261.63],
-      ],
-    ];
-
-    this.synthChords = progressions[seed % progressions.length];
-    this.synthStep = 0;
-    this.startSynthTimers();
-  }
-
-  private startSynthTimers() {
-    if (typeof window === 'undefined') return;
-
-    this.synthLastTick = performance.now();
-
-    const triggerChord = () => {
-      if (!this.isPlayingRecord || this.isPausedRecord) return;
-      const ctx = this.ctx;
-      if (!ctx || !this.musicGain || this.synthChords.length === 0) return;
-
+    try {
       const now = ctx.currentTime;
-      const chord = this.synthChords[this.synthStep % this.synthChords.length];
-      this.synthStep++;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(140, now);
+      osc.frequency.exponentialRampToValueAtTime(42, now + 0.09);
 
-      chord.forEach((freq, idx) => {
-        const osc = ctx.createOscillator();
-        const filter = ctx.createBiquadFilter();
-        const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.14, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
 
-        osc.type = idx === 0 ? 'triangle' : 'sine';
-        osc.frequency.setValueAtTime(freq, now + idx * 0.045);
-
-        filter.type = 'lowpass';
-        filter.frequency.setValueAtTime(1150, now);
-
-        gain.gain.setValueAtTime(0.0001, now + idx * 0.045);
-        gain.gain.linearRampToValueAtTime(0.11, now + idx * 0.045 + 0.14);
-        gain.gain.exponentialRampToValueAtTime(0.0008, now + 3.1);
-
-        osc.connect(filter);
-        filter.connect(gain);
-        gain.connect(this.musicGain!);
-
-        osc.start(now + idx * 0.045);
-        osc.stop(now + 3.25);
-      });
-    };
-
-    triggerChord();
-    this.synthTimer = window.setInterval(triggerChord, 3200);
-
-    this.synthProgressTimer = window.setInterval(() => {
-      if (!this.isPlayingRecord || this.isPausedRecord) return;
-      const now = performance.now();
-      this.synthElapsedSec += (now - this.synthLastTick) / 1000;
-      this.synthLastTick = now;
-
-      const ratio = Math.min(1, this.synthElapsedSec / Math.max(1, this.windowSpan));
-      this.activeProgressCb?.(ratio);
-
-      if (ratio >= 1) {
-        const endedCb = this.activeEndedCb;
-        this.stopRecord();
-        endedCb?.();
-      }
-    }, 180);
+      osc.connect(gain);
+      gain.connect(this.masterGain);
+      osc.start(now);
+      osc.stop(now + 0.12);
+    } catch {
+      // Ignore if context is locked
+    }
   }
 
-  private cleanupHtmlAudio() {
-    if (this.rafId !== null && typeof window !== 'undefined') {
-      window.cancelAnimationFrame(this.rafId);
-      this.rafId = null;
+  private clearProgressLoop() {
+    if (this.progressRaf !== null) {
+      window.cancelAnimationFrame(this.progressRaf);
+      this.progressRaf = null;
     }
+  }
+
+  private stopSynthLoop() {
+    if (this.synthInterval !== null) {
+      window.clearInterval(this.synthInterval);
+      this.synthInterval = null;
+    }
+    this.synthActive = false;
+  }
+
+  private teardownAudioElement() {
     if (this.audioEl) {
-      this.audioEl.onloadedmetadata = null;
       this.audioEl.onended = null;
       this.audioEl.onerror = null;
-      this.audioEl.pause();
-      this.audioEl.removeAttribute('src');
-      this.audioEl.load();
+      this.audioEl.onloadedmetadata = null;
+      try {
+        this.audioEl.pause();
+        this.audioEl.src = '';
+      } catch {
+        // Ignore cleanup errors
+      }
       this.audioEl = null;
+      this.audioElRoutedToWebAudio = false;
     }
   }
 
   public stopRecord() {
-    this.isPlayingRecord = false;
-    this.isPausedRecord = false;
-    this.activeSource = null;
-    this.cleanupHtmlAudio();
+    this.clearProgressLoop();
+    this.stopSynthLoop();
+    this.teardownAudioElement();
+    this.currentSourceKey = null;
+    this.isPausedState = false;
+    this.synthPausedOffsetSec = 0;
+    this.onProgressCb = null;
+    this.onEndedCb = null;
+    this.applyGainTargets();
+  }
 
-    if (this.synthTimer !== null && typeof window !== 'undefined') {
-      window.clearInterval(this.synthTimer);
-      this.synthTimer = null;
-    }
-    if (this.synthProgressTimer !== null && typeof window !== 'undefined') {
-      window.clearInterval(this.synthProgressTimer);
-      this.synthProgressTimer = null;
+  public hasPausedSource(sourceKey: string): boolean {
+    return (
+      this.isPausedState &&
+      this.currentSourceKey === sourceKey &&
+      (Boolean(this.audioEl) || Boolean(this.synthVinyl))
+    );
+  }
+
+  public pauseRecord() {
+    this.clearProgressLoop();
+    this.isPausedState = true;
+
+    if (this.audioEl) {
+      try {
+        this.audioEl.pause();
+      } catch {
+        // Ignore
+      }
     }
 
-    this.activeProgressCb = null;
-    this.activeEndedCb = null;
-    this.applyGains();
+    if (this.synthActive) {
+      const elapsed = (performance.now() - this.synthStartedAtMs) / 1000;
+      this.synthPausedOffsetSec = Math.min(this.synthTotalSec, elapsed);
+      this.stopSynthLoop();
+    }
+
+    this.applyGainTargets();
+  }
+
+  public resumeRecord(): boolean {
+    if (!this.isPausedState) return false;
+    this.ensureContext();
+
+    if (this.audioEl) {
+      this.isPausedState = false;
+      this.audioEl.play().catch(() => {});
+      this.startHtmlAudioProgressLoop();
+      this.applyGainTargets();
+      return true;
+    }
+
+    if (this.synthVinyl) {
+      this.isPausedState = false;
+      this.startProceduralSynth(this.synthVinyl, this.synthPausedOffsetSec);
+      this.applyGainTargets();
+      return true;
+    }
+
+    return false;
+  }
+
+  public seekToRatio(ratio: number) {
+    const clamped = Math.max(0, Math.min(1, ratio));
+
+    if (this.audioEl) {
+      const totalDur =
+        Number.isFinite(this.audioEl.duration) && this.audioEl.duration > 0
+          ? this.audioEl.duration
+          : this.clipEndSec;
+
+      if (this.clipMode === 'snippet') {
+        const start = Math.max(0, this.clipStartSec);
+        const end = Math.min(totalDur || this.clipEndSec, Math.max(start + 5, this.clipEndSec));
+        const target = start + clamped * (end - start);
+        try {
+          this.audioEl.currentTime = target;
+        } catch {
+          // Ignore seek before metadata loaded
+        }
+      } else if (totalDur > 0) {
+        try {
+          this.audioEl.currentTime = clamped * totalDur;
+        } catch {
+          // Ignore
+        }
+      }
+      this.onProgressCb?.(clamped);
+      return;
+    }
+
+    if (this.synthVinyl) {
+      const newSec = clamped * this.synthTotalSec;
+      this.synthPausedOffsetSec = newSec;
+      this.synthStartedAtMs = performance.now() - newSec * 1000;
+      this.onProgressCb?.(clamped);
+    }
+  }
+
+  public playRecord(
+    vinyl: VinylRecord,
+    onProgress: (ratio: number) => void,
+    onEnded: () => void,
+    track?: TrackItem | null
+  ) {
+    this.stopRecord();
+    const ctx = this.ensureContext();
+
+    this.currentSourceKey = track ? `${vinyl.id}:${track.id}` : vinyl.id;
+    this.isPausedState = false;
+    this.onProgressCb = onProgress;
+    this.onEndedCb = onEnded;
+
+    const rawAudioUrl = (track?.audioUrl || vinyl.audioUrl || '').trim();
+    const clipMode = track?.clipMode || vinyl.clipMode || 'full';
+    const clipStartSec = Math.max(0, track?.clipStartSec ?? vinyl.clipStartSec ?? 0);
+    const clipEndSec = Math.max(
+      clipStartSec + 5,
+      track?.clipEndSec ?? vinyl.clipEndSec ?? 30
+    );
+
+    this.clipMode = clipMode;
+    this.clipStartSec = clipStartSec;
+    this.clipEndSec = clipEndSec;
+
+    if (rawAudioUrl) {
+      this.startHtmlAudio(rawAudioUrl, vinyl, ctx, false);
+    } else {
+      this.synthVinyl = vinyl;
+      this.startProceduralSynth(vinyl, 0);
+    }
+
+    this.applyGainTargets();
+  }
+
+  private startHtmlAudio(
+    rawAudioUrl: string,
+    vinyl: VinylRecord,
+    ctx: AudioContext | null,
+    bypassCorsEnhancer: boolean
+  ) {
+    this.teardownAudioElement();
+
+    const preset = bypassCorsEnhancer ? 'none' : parseAudioEnhancePreset(rawAudioUrl);
+    const cleanUrl = stripAudioEnhancePreset(rawAudioUrl);
+
+    const audio = new Audio();
+    audio.preload = 'auto';
+
+    let routed = false;
+    if (preset !== 'none' && ctx && this.musicGain) {
+      audio.crossOrigin = 'anonymous';
+      const connected = connectRealtimeAudioEnhancer(ctx, audio, preset, this.musicGain);
+      if (connected) {
+        routed = true;
+      }
+    }
+
+    audio.src = cleanUrl;
+    audio.volume = routed ? 1 : this.soundEnabled ? this.musicVol : 0;
+
+    this.audioEl = audio;
+    this.audioElRoutedToWebAudio = routed;
+
+    const seekInitialSnippet = () => {
+      if (this.clipMode === 'snippet' && this.clipStartSec > 0) {
+        try {
+          audio.currentTime = this.clipStartSec;
+        } catch {
+          // Ignore
+        }
+      }
+    };
+
+    audio.onloadedmetadata = seekInitialSnippet;
+
+    audio.onended = () => {
+      if (this.audioEl !== audio) return;
+      this.clearProgressLoop();
+      this.isPausedState = false;
+      this.onProgressCb?.(0);
+      const cb = this.onEndedCb;
+      this.teardownAudioElement();
+      this.applyGainTargets();
+      cb?.();
+    };
+
+    audio.onerror = () => {
+      if (this.audioEl !== audio) return;
+      // If CORS prevented Web Audio mastering on an external host, retry direct playback
+      if (!bypassCorsEnhancer && routed) {
+        this.startHtmlAudio(rawAudioUrl, vinyl, ctx, true);
+        return;
+      }
+      // Final fallback to warm analog chord synthesis
+      this.teardownAudioElement();
+      this.synthVinyl = vinyl;
+      this.startProceduralSynth(vinyl, 0);
+    };
+
+    seekInitialSnippet();
+    audio
+      .play()
+      .then(() => {
+        if (this.audioEl === audio) {
+          this.startHtmlAudioProgressLoop();
+          this.applyGainTargets();
+        }
+      })
+      .catch(() => {
+        // Autoplay may wait for next gesture
+      });
+  }
+
+  private startHtmlAudioProgressLoop() {
+    this.clearProgressLoop();
+
+    const tick = () => {
+      const audio = this.audioEl;
+      if (!audio || this.isPausedState) return;
+
+      const cur = audio.currentTime || 0;
+      const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+
+      if (this.clipMode === 'snippet') {
+        const start = Math.max(0, this.clipStartSec);
+        const end = dur > 0 ? Math.min(dur, Math.max(start + 5, this.clipEndSec)) : Math.max(start + 5, this.clipEndSec);
+        const span = Math.max(1, end - start);
+
+        if (cur >= end) {
+          audio.pause();
+          this.clearProgressLoop();
+          this.isPausedState = false;
+          this.onProgressCb?.(0);
+          const cb = this.onEndedCb;
+          this.teardownAudioElement();
+          this.applyGainTargets();
+          cb?.();
+          return;
+        }
+
+        const ratio = Math.max(0, Math.min(1, (cur - start) / span));
+        this.onProgressCb?.(ratio);
+      } else if (dur > 0) {
+        const ratio = Math.max(0, Math.min(1, cur / dur));
+        this.onProgressCb?.(ratio);
+      }
+
+      this.progressRaf = window.requestAnimationFrame(tick);
+    };
+
+    this.progressRaf = window.requestAnimationFrame(tick);
+  }
+
+  private startProceduralSynth(vinyl: VinylRecord, offsetSec: number) {
+    this.stopSynthLoop();
+    const ctx = this.ensureContext();
+    this.synthVinyl = vinyl;
+    this.synthActive = true;
+    this.synthTotalSec = 42;
+    this.synthStartedAtMs = performance.now() - offsetSec * 1000;
+
+    const chordSets: number[][] = [
+      [220.0, 261.63, 329.63, 392.0], // Am7
+      [174.61, 220.0, 261.63, 329.63], // Fmaj7
+      [196.0, 246.94, 293.66, 392.0], // G6
+      [164.81, 196.0, 246.94, 293.66], // Em7
+    ];
+
+    const seedOffset = (vinyl.artStyle || 0) % chordSets.length;
+    this.synthStepIndex = Math.floor(offsetSec / 2.6) % chordSets.length;
+
+    const triggerChord = () => {
+      if (!ctx || !this.musicGain || !this.synthActive) return;
+      const chord = chordSets[(this.synthStepIndex + seedOffset) % chordSets.length];
+      this.synthStepIndex = (this.synthStepIndex + 1) % chordSets.length;
+
+      const now = ctx.currentTime;
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 920;
+
+      const chordGain = ctx.createGain();
+      chordGain.gain.setValueAtTime(0.0001, now);
+      chordGain.gain.linearRampToValueAtTime(0.065, now + 0.35);
+      chordGain.gain.exponentialRampToValueAtTime(0.0008, now + 2.5);
+
+      lp.connect(chordGain);
+      chordGain.connect(this.musicGain);
+
+      chord.forEach((freq) => {
+        const osc = ctx.createOscillator();
+        osc.type = 'triangle';
+        osc.frequency.value = freq;
+        osc.connect(lp);
+        osc.start(now);
+        osc.stop(now + 2.55);
+      });
+    };
+
+    triggerChord();
+    this.synthInterval = window.setInterval(triggerChord, 2600);
+
+    const tick = () => {
+      if (!this.synthActive || this.isPausedState) return;
+      const elapsed = (performance.now() - this.synthStartedAtMs) / 1000;
+      if (elapsed >= this.synthTotalSec) {
+        this.stopSynthLoop();
+        this.clearProgressLoop();
+        this.onProgressCb?.(0);
+        const cb = this.onEndedCb;
+        this.synthVinyl = null;
+        this.applyGainTargets();
+        cb?.();
+        return;
+      }
+      this.onProgressCb?.(Math.max(0, Math.min(1, elapsed / this.synthTotalSec)));
+      this.progressRaf = window.requestAnimationFrame(tick);
+    };
+
+    this.progressRaf = window.requestAnimationFrame(tick);
   }
 }
 

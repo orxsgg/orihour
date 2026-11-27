@@ -131,7 +131,11 @@ export function isSingleSongRelease(
   vinyl: Pick<VinylRecord, 'releaseType' | 'tracks'>
 ): boolean {
   if (vinyl.releaseType === 'Song') return true;
-  if (vinyl.releaseType === 'Live Version' || vinyl.releaseType === 'Cover') {
+  if (
+    vinyl.releaseType === 'Single' ||
+    vinyl.releaseType === 'Live Version' ||
+    vinyl.releaseType === 'Cover'
+  ) {
     return !hasMultipleTracks(vinyl);
   }
   return false;

@@ -25,6 +25,7 @@ import {
   CheckSquare,
   Square,
   Loader2,
+  Sparkles,
 } from 'lucide-react';
 import {
   ClipMode,
@@ -37,6 +38,13 @@ import {
 import { extractAudioDurationSeconds, formatDurationSeconds } from '@/lib/audioEngine';
 import { collectAudioFilesFromSelection } from '@/lib/audioArchiveExtractor';
 import {
+  AUDIO_ENHANCE_PRESETS,
+  AudioEnhancePreset,
+  applyAudioEnhancePreset,
+  parseAudioEnhancePreset,
+  stripAudioEnhancePreset,
+} from '@/lib/audioEnhancer';
+import {
   formatGenres,
   hasMultipleTracks,
   parseGenres,
@@ -48,6 +56,7 @@ import ThemedDropdown, { DropdownOption } from '@/components/ui/ThemedDropdown';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 import ImageCropEnhanceModal from './ImageCropEnhanceModal';
 import SnippetTrimmer from './SnippetTrimmer';
+import AudioEnhancerControl from './AudioEnhancerControl';
 
 interface VinylLibraryTabProps {
   vinyls: VinylRecord[];
@@ -115,7 +124,7 @@ interface VinylFormState {
 }
 
 function isFlexibleReleaseType(rt: ReleaseType): boolean {
-  return rt === 'Live Version' || rt === 'Cover';
+  return rt === 'Single' || rt === 'Live Version' || rt === 'Cover';
 }
 
 function createEmptyForm(defaultGenre: string): VinylFormState {
@@ -245,7 +254,6 @@ export default function VinylLibraryTab({
     };
   }, [editing]);
 
-  // Attach non-standard webkitdirectory attribute safely for folder uploads
   const bindFolderInputRef = (el: HTMLInputElement | null) => {
     folderInputRef.current = el;
     if (el) {
@@ -256,7 +264,7 @@ export default function VinylLibraryTab({
 
   const showError = (msg: string) => {
     setErrorMsg(msg);
-    setTimeout(() => setErrorMsg(null), 5000);
+    setTimeout(() => setErrorMsg(null), 6000);
   };
 
   const genreNames = useMemo(() => {
@@ -408,6 +416,7 @@ export default function VinylLibraryTab({
   };
 
   const openEdit = (v: VinylRecord) => {
+    setErrorMsg(null);
     setSelectedTrackIds(new Set());
     const rt = v.releaseType || 'Song';
     const multi = hasMultipleTracks(v);
@@ -549,11 +558,13 @@ export default function VinylLibraryTab({
         editing.title || file.name,
         file.name.split('.').pop()?.toLowerCase() || 'mp3'
       );
+      const currentPreset = parseAudioEnhancePreset(editing.audioUrl);
+      const finalUrl = applyAudioEnhancePreset(publicUrl, currentPreset);
       setEditing((prev) =>
         prev
           ? {
               ...prev,
-              audioUrl: publicUrl,
+              audioUrl: finalUrl,
               duration: secs ? formatDurationSeconds(secs) : prev.duration,
               clipEndSec:
                 secs && prev.clipMode === 'snippet'
@@ -574,7 +585,6 @@ export default function VinylLibraryTab({
     }
   };
 
-  // Batch Upload ZIP / Folder / Multiple Audio Files -> Auto Track Title, Duration & Storage Upload
   const handleBatchAudioSelection = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -656,7 +666,9 @@ export default function VinylLibraryTab({
             : `${uploadedTracks.length} lagu berhasil diimpor otomatis beserta judul dan durasinya.`
         );
       } else {
-        showError('Semua file audio gagal diunggah. Pastikan koneksi dan batas ukuran file aman.');
+        showError(
+          'Semua file audio gagal diunggah. Pastikan koneksi dan batas ukuran file aman.'
+        );
       }
     } catch (err) {
       showError(
@@ -665,6 +677,20 @@ export default function VinylLibraryTab({
     } finally {
       setBatchUploadProgress(null);
     }
+  };
+
+  const handleApplyEnhanceToAllTracks = (preset: AudioEnhancePreset) => {
+    setEditing((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        tracks: prev.tracks.map((t) =>
+          t.audioUrl
+            ? { ...t, audioUrl: applyAudioEnhancePreset(t.audioUrl, preset) }
+            : t
+        ),
+      };
+    });
   };
 
   const handleAddTrackRow = () => {
@@ -768,8 +794,9 @@ export default function VinylLibraryTab({
         targetTrack?.title || file.name,
         file.name.split('.').pop()?.toLowerCase() || 'mp3'
       );
+      const existingPreset = parseAudioEnhancePreset(targetTrack?.audioUrl);
       updateTrackRow(trackId, {
-        audioUrl: publicUrl,
+        audioUrl: applyAudioEnhancePreset(publicUrl, existingPreset),
         duration: secs ? formatDurationSeconds(secs) : targetTrack?.duration || '03:30',
       });
     } catch (err) {
@@ -849,8 +876,7 @@ export default function VinylLibraryTab({
             duration: t.duration.trim() || '03:30',
           }));
 
-    const resolvedGenreString =
-      formatGenres(editing.selectedGenres) || 'Indie';
+    const resolvedGenreString = formatGenres(editing.selectedGenres) || 'Indie';
 
     let resolvedAudioUrl = editing.audioUrl.trim() || undefined;
     let resolvedClipMode: ClipMode = editing.clipMode;
@@ -873,6 +899,7 @@ export default function VinylLibraryTab({
         resolvedClipEnd = favTrack.clipEndSec ?? 30;
       }
     }
+
     setErrorMsg(null);
     setSaving(true);
     try {
@@ -960,6 +987,10 @@ export default function VinylLibraryTab({
     uploadingTrackId !== null ||
     batchUploadProgress !== null;
 
+  const hasAnyTrackAudio = Boolean(
+    editing?.tracks.some((t) => Boolean(t.audioUrl?.trim()))
+  );
+
   return (
     <div className="space-y-5">
       {statusMsg && (
@@ -978,7 +1009,7 @@ export default function VinylLibraryTab({
         </div>
       )}
 
-      {errorMsg && (
+      {errorMsg && !editing && (
         <div className="flex items-center justify-between gap-2 rounded-2xl border border-[#6E1D2C]/25 bg-[#6E1D2C]/10 px-4 py-3 text-xs font-semibold text-[#571622]">
           <span className="inline-flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-[#6E1D2C]" />
@@ -1022,6 +1053,7 @@ export default function VinylLibraryTab({
             <button
               type="button"
               onClick={() => {
+                setErrorMsg(null);
                 setSelectedTrackIds(new Set());
                 setEditing(createEmptyForm(genreNames[0] || 'Indie'));
               }}
@@ -1040,7 +1072,7 @@ export default function VinylLibraryTab({
                 key={rt}
                 type="button"
                 onClick={() => setTypeFilter(rt)}
-                className={`cursor-pointer rounded-full border px-3 py-1 font-mono text-[10px] font-semibold uppercase transition ${
+                className={`cursor-pointer rounded-full border px-3 py-1 font-mono text-[10px] font-semibold whitespace-nowrap uppercase transition ${
                   typeFilter === rt
                     ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
                     : 'border-[#4A2E1B]/15 bg-white/80 text-[#5C4432] hover:bg-white'
@@ -1056,7 +1088,7 @@ export default function VinylLibraryTab({
               <button
                 type="button"
                 onClick={toggleSelectAllVinyls}
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-1.5 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3]"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-1.5 text-xs font-semibold whitespace-nowrap text-[#4A2E1B] transition hover:bg-[#EFE4D3]"
               >
                 {allFilteredVinylsSelected ? (
                   <CheckSquare className="h-3.5 w-3.5" />
@@ -1072,7 +1104,7 @@ export default function VinylLibraryTab({
                 type="button"
                 disabled={bulkDeletingVinyls}
                 onClick={requestBulkDeleteVinyls}
-                className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#6E1D2C] px-3.5 py-1.5 text-xs font-semibold text-[#FAF5EC] shadow-xs transition hover:bg-[#571622] disabled:opacity-50"
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#6E1D2C] px-3.5 py-1.5 text-xs font-semibold whitespace-nowrap text-[#FAF5EC] shadow-xs transition hover:bg-[#571622] disabled:opacity-50"
               >
                 <Trash2 className="h-3.5 w-3.5" />
                 <span>
@@ -1131,7 +1163,7 @@ export default function VinylLibraryTab({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
-                    handleQuickAddGenre();
+                    void handleQuickAddGenre();
                   }
                 }}
                 placeholder="Nama genre baru (misal: Shoegaze, Jazz, Dream Pop)..."
@@ -1140,7 +1172,7 @@ export default function VinylLibraryTab({
               <button
                 type="button"
                 disabled={genreBusy || !newGenreName.trim()}
-                onClick={handleQuickAddGenre}
+                onClick={() => void handleQuickAddGenre()}
                 className="inline-flex cursor-pointer items-center gap-1 rounded-xl bg-[#4A2E1B] px-3.5 py-1.5 text-xs font-semibold text-[#FAF5EC] transition hover:bg-[#3A2213] disabled:opacity-45"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -1196,6 +1228,10 @@ export default function VinylLibraryTab({
           const isMulti = hasMultipleTracks(v);
           const isSelected = selectedVinylIds.has(v.id);
           const gList = parseGenres(v.genre || v.mood);
+          const mainEnhance = parseAudioEnhancePreset(v.audioUrl);
+          const anyTrackEnhanced = Boolean(
+            v.tracks?.some((t) => parseAudioEnhancePreset(t.audioUrl) !== 'none')
+          );
 
           return (
             <article
@@ -1234,6 +1270,12 @@ export default function VinylLibraryTab({
                       {g}
                     </span>
                   ))}
+                  {(mainEnhance !== 'none' || anyTrackEnhanced) && (
+                    <span className="inline-flex items-center gap-0.5 rounded-full bg-[#C89B54]/22 px-2 py-0.5 font-mono text-[9px] font-semibold text-[#6E4D1B] uppercase">
+                      <Sparkles className="h-2.5 w-2.5" />
+                      Enhanced
+                    </span>
+                  )}
                   {v.clipMode === 'snippet' && (
                     <span className="rounded-full bg-[#B58A52]/20 px-2 py-0.5 font-mono text-[9px] font-semibold text-[#6E4D1B] uppercase">
                       SEBAGIAN ({formatSecLabel(v.clipStartSec ?? 0)}-
@@ -1328,7 +1370,7 @@ export default function VinylLibraryTab({
 
               {/* Modal Scrollable Form Body */}
               <div className="orihour-scroll grid flex-1 grid-cols-1 gap-6 overflow-y-auto p-6 lg:grid-cols-12">
-                {/* Left Column: Cover Art + Disc Preview + Main Audio & Snippet Trimmer */}
+                {/* Left Column: Cover Art + Disc Preview + Main Audio + Audio Enhancer + Snippet Trimmer */}
                 <div className="space-y-4 lg:col-span-5">
                   <div className="rounded-2xl border border-[#4A2E1B]/12 bg-white/85 p-4">
                     <p className="font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
@@ -1355,7 +1397,7 @@ export default function VinylLibraryTab({
                         )}
                         {editing.showCoverOverlay && (
                           <div className="absolute inset-x-0 top-0 bg-gradient-to-b from-black/82 via-black/55 to-transparent px-2.5 pt-2 pb-4 text-white">
-                            <p className="truncate text-[10px] font-bold leading-tight">
+                            <p className="truncate text-[10px] leading-tight font-bold">
                               {editing.title || 'Judul'}
                             </p>
                             <p className="truncate font-mono text-[8px] text-white/80">
@@ -1462,7 +1504,7 @@ export default function VinylLibraryTab({
                     </div>
                   </div>
 
-                  {/* Main Audio MP3 + Draggable Snippet Trimmer */}
+                  {/* Main Audio MP3 + Audio Enhancer + Draggable Snippet Trimmer */}
                   <div className="rounded-2xl border border-[#4A2E1B]/12 bg-white/85 p-4">
                     <p className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold tracking-[0.14em] text-[#7A5230] uppercase">
                       <Music2 className="h-3.5 w-3.5" />
@@ -1472,8 +1514,8 @@ export default function VinylLibraryTab({
                     </p>
                     <p className="mt-1 text-[11px] text-[#6B5442]">
                       {isSingleMode
-                        ? 'Upload MP3, lalu pilih putar Full Song atau geser rentang & playhead snippet bebas.'
-                        : 'Opsional. Jika dikosongkan, turntable otomatis memutar lagu favorit / lagu pertama dari daftar track.'}
+                        ? 'Upload MP3, aktifkan Audio Enhancement jika suara kurang jernih, lalu pilih Full Song atau Snippet.'
+                        : 'Opsional. Jika dikosongkan, turntable otomatis memutar lagu favorit atau lagu pertama dari daftar track.'}
                     </p>
 
                     <input
@@ -1507,7 +1549,23 @@ export default function VinylLibraryTab({
                     </div>
 
                     {editing.audioUrl && editing.clipMode === 'full' && (
-                      <audio controls src={editing.audioUrl} className="mt-3 h-9 w-full" />
+                      <audio
+                        controls
+                        src={stripAudioEnhancePreset(editing.audioUrl)}
+                        className="mt-3 h-9 w-full"
+                      />
+                    )}
+
+                    {/* Real-Time Studio Audio Enhancement + A/B Preview */}
+                    {editing.audioUrl && (
+                      <AudioEnhancerControl
+                        audioUrl={editing.audioUrl}
+                        onChangeAudioUrl={(nextUrl) =>
+                          setEditing((prev) =>
+                            prev ? { ...prev, audioUrl: nextUrl } : prev
+                          )
+                        }
+                      />
                     )}
 
                     {/* Full Song vs Snippet Selector */}
@@ -1527,7 +1585,7 @@ export default function VinylLibraryTab({
                             key={opt.id}
                             type="button"
                             onClick={() => setEditing({ ...editing, clipMode: opt.id })}
-                            className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                            className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition ${
                               editing.clipMode === opt.id
                                 ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
                                 : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#F5ECE0]'
@@ -1541,7 +1599,7 @@ export default function VinylLibraryTab({
                       {editing.clipMode === 'snippet' && (
                         <div className="mt-3">
                           <SnippetTrimmer
-                            audioUrl={editing.audioUrl || undefined}
+                            audioUrl={stripAudioEnhancePreset(editing.audioUrl) || undefined}
                             durationLabel={editing.duration}
                             startSec={editing.clipStartSec}
                             endSec={editing.clipEndSec}
@@ -1564,9 +1622,9 @@ export default function VinylLibraryTab({
                 </div>
 
                 {/* Right Column: Release Type Switch + Metadata + Multi-Genre + Dynamic Fields */}
-                <div className="space-y-3.5 lg:col-span-7">
+                <div className="space-y-4 lg:col-span-7">
                   <div className="rounded-2xl border border-[#4A2E1B]/15 bg-[#F4ECE0]/80 p-3.5">
-                    <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                    <span className="block font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
                       Jenis Koleksi / Rilisan *
                     </span>
                     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1575,7 +1633,7 @@ export default function VinylLibraryTab({
                           key={rt}
                           type="button"
                           onClick={() => handleReleaseTypeChange(rt)}
-                          className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                          className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition ${
                             editing.releaseType === rt
                               ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC] shadow-xs'
                               : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#FAF5EC]'
@@ -1586,10 +1644,10 @@ export default function VinylLibraryTab({
                       ))}
                     </div>
 
-                    {/* Single vs Multi-Track Option for Live Version & Cover */}
+                    {/* Clean 2-Format Selector for Single, Live Version & Cover */}
                     {isFlexibleReleaseType(editing.releaseType) && (
                       <div className="mt-3 border-t border-[#4A2E1B]/10 pt-3">
-                        <span className="font-mono text-[9.5px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                        <span className="block font-mono text-[9.5px] font-semibold tracking-wider text-[#5C4432] uppercase">
                           Format {editing.releaseType}
                         </span>
                         <div className="mt-1.5 grid grid-cols-2 gap-2">
@@ -1598,89 +1656,130 @@ export default function VinylLibraryTab({
                             onClick={() =>
                               setEditing({ ...editing, singleOrMulti: 'single' })
                             }
-                            className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                            className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border px-3 py-2 text-center transition ${
                               editing.singleOrMulti === 'single'
-                                ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
+                                ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC] shadow-xs'
                                 : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#FAF5EC]'
                             }`}
                           >
-                            1 Lagu (Favorite Lyrics)
+                            <span className="text-xs font-semibold whitespace-nowrap">
+                              1 Lagu
+                            </span>
+                            <span
+                              className={`mt-0.5 font-mono text-[9.5px] whitespace-nowrap ${
+                                editing.singleOrMulti === 'single'
+                                  ? 'text-[#E8D7BE]'
+                                  : 'text-[#8A7360]'
+                              }`}
+                            >
+                              Favorite Lyrics · Details
+                            </span>
                           </button>
+
                           <button
                             type="button"
                             onClick={() =>
                               setEditing({ ...editing, singleOrMulti: 'multi' })
                             }
-                            className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                            className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border px-3 py-2 text-center transition ${
                               editing.singleOrMulti === 'multi'
-                                ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
+                                ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC] shadow-xs'
                                 : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#FAF5EC]'
                             }`}
                           >
-                            Banyak Lagu (Tracklist &amp; Fav Song)
+                            <span className="text-xs font-semibold whitespace-nowrap">
+                              Banyak Lagu
+                            </span>
+                            <span
+                              className={`mt-0.5 font-mono text-[9.5px] whitespace-nowrap ${
+                                editing.singleOrMulti === 'multi'
+                                  ? 'text-[#E8D7BE]'
+                                  : 'text-[#8A7360]'
+                              }`}
+                            >
+                              Tracklist · Favorite Song
+                            </span>
                           </button>
                         </div>
                       </div>
                     )}
 
-                    <p className="mt-2 text-[11px] text-[#6E5643]">
+                    <p className="mt-2 text-[11px] leading-relaxed text-[#6E5643]">
                       {isSingleMode
-                        ? 'Mode 1 Lagu: menggunakan Favorite Lyrics, di katalog pengunjung tombolnya otomatis "Details".'
-                        : `Mode Multi-Track (${editing.releaseType}): gunakan daftar tracklist & Favorite Song, di katalog pengunjung tombolnya otomatis "Tracklist".`}
+                        ? 'Mode 1 Lagu: memakai Favorite Lyrics, tombol katalog otomatis "Details".'
+                        : `Mode Multi-Track (${editing.releaseType}): memakai Tracklist & Favorite Song, tombol katalog otomatis "Tracklist".`}
                     </p>
                   </div>
 
+                  {/* Row 1: Title & Artist */}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <label className="block">
-                      <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                    <div className="flex flex-col gap-1">
+                      <label
+                        htmlFor="vinyl-title-input"
+                        className="block font-mono text-[10px] leading-4 font-semibold tracking-wider text-[#5C4432] uppercase"
+                      >
                         {isSingleMode ? 'Judul Lagu *' : `Judul ${editing.releaseType} *`}
-                      </span>
+                      </label>
                       <input
+                        id="vinyl-title-input"
                         type="text"
                         required
                         value={editing.title}
                         onChange={(e) => setEditing({ ...editing, title: e.target.value })}
                         placeholder={isSingleMode ? 'e.g. Cornerstone' : 'e.g. Currents'}
-                        className="mt-1 w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 text-sm text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                        className="h-[36px] w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                       />
-                    </label>
+                    </div>
 
-                    <label className="block">
-                      <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                    <div className="flex flex-col gap-1">
+                      <label
+                        htmlFor="vinyl-artist-input"
+                        className="block font-mono text-[10px] leading-4 font-semibold tracking-wider text-[#5C4432] uppercase"
+                      >
                         Nama Penyanyi / Band *
-                      </span>
+                      </label>
                       <input
+                        id="vinyl-artist-input"
                         type="text"
                         required
                         value={editing.artist}
                         onChange={(e) => setEditing({ ...editing, artist: e.target.value })}
                         placeholder="e.g. Tame Impala"
-                        className="mt-1 w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 text-sm text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                        className="h-[36px] w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                       />
-                    </label>
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  {/* Row 2: Strictly Aligned Metadata Inputs & Dropdown (Same Label Height + Same Control Height) */}
+                  <div className="grid grid-cols-2 items-end gap-3 sm:grid-cols-3">
                     {isSingleMode && (
-                      <label className="col-span-2 block sm:col-span-1">
-                        <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                      <div className="col-span-2 flex flex-col gap-1 sm:col-span-1">
+                        <label
+                          htmlFor="vinyl-album-input"
+                          className="block truncate font-mono text-[10px] leading-4 font-semibold tracking-wider text-[#5C4432] uppercase"
+                        >
                           Dari Album (Opsional)
-                        </span>
+                        </label>
                         <input
+                          id="vinyl-album-input"
                           type="text"
                           value={editing.album}
                           onChange={(e) => setEditing({ ...editing, album: e.target.value })}
                           placeholder="e.g. Humbug"
-                          className="mt-1 w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 text-sm text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                          className="h-[34px] w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                         />
-                      </label>
+                      </div>
                     )}
 
-                    <label className="block">
-                      <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                    <div className="flex flex-col gap-1">
+                      <label
+                        htmlFor="vinyl-year-input"
+                        className="block truncate font-mono text-[10px] leading-4 font-semibold tracking-wider text-[#5C4432] uppercase"
+                      >
                         Tahun Rilis *
-                      </span>
+                      </label>
                       <input
+                        id="vinyl-year-input"
                         type="number"
                         min={1900}
                         max={2100}
@@ -1692,27 +1791,31 @@ export default function VinylLibraryTab({
                             releaseYear: parseInt(e.target.value, 10) || 2026,
                           })
                         }
-                        className="mt-1 w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 text-sm text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                        className="h-[34px] w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                       />
-                    </label>
+                    </div>
 
-                    <label className="block">
-                      <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                    <div className="flex flex-col gap-1">
+                      <label
+                        htmlFor="vinyl-duration-input"
+                        className="block truncate font-mono text-[10px] leading-4 font-semibold tracking-wider text-[#5C4432] uppercase"
+                      >
                         {isSingleMode ? 'Durasi Lagu *' : 'Total Durasi'}
-                      </span>
+                      </label>
                       <input
+                        id="vinyl-duration-input"
                         type="text"
                         required
                         value={editing.duration}
                         onChange={(e) => setEditing({ ...editing, duration: e.target.value })}
                         placeholder={isSingleMode ? '03:45' : '42:10'}
-                        className="mt-1 w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 font-mono text-sm text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                        className="h-[34px] w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                       />
-                    </label>
+                    </div>
 
                     {!isSingleMode && (
-                      <div className="col-span-2 sm:col-span-1">
-                        <span className="block font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                      <div className="col-span-2 flex flex-col gap-1 sm:col-span-1">
+                        <span className="block truncate font-mono text-[10px] leading-4 font-semibold tracking-wider text-[#5C4432] uppercase">
                           Slot Kontainer Rak
                         </span>
                         <ThemedDropdown
@@ -1726,7 +1829,6 @@ export default function VinylLibraryTab({
                           }
                           ariaLabel="Pilih slot kontainer rak"
                           size="sm"
-                          className="mt-1"
                         />
                       </div>
                     )}
@@ -1793,8 +1895,8 @@ export default function VinylLibraryTab({
                   </div>
 
                   {isSingleMode && (
-                    <div>
-                      <span className="block font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                    <div className="flex flex-col gap-1">
+                      <span className="block font-mono text-[10px] leading-4 font-semibold tracking-wider text-[#5C4432] uppercase">
                         Slot Kontainer Rak
                       </span>
                       <ThemedDropdown
@@ -1808,35 +1910,42 @@ export default function VinylLibraryTab({
                         }
                         ariaLabel="Pilih slot kontainer rak"
                         size="sm"
-                        className="mt-1"
                       />
                     </div>
                   )}
 
                   {/* CONDITIONAL SECTION: Single Song vs Multi-Track */}
                   {isSingleMode ? (
-                    <label className="block">
-                      <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                    <div className="flex flex-col gap-1">
+                      <label
+                        htmlFor="vinyl-fav-lyric"
+                        className="block font-mono text-[10px] leading-4 font-semibold tracking-wider text-[#5C4432] uppercase"
+                      >
                         Favorite Lyrics (Opsional — Kosongkan Jika Tidak Ada)
-                      </span>
+                      </label>
                       <textarea
+                        id="vinyl-fav-lyric"
                         rows={2}
                         value={editing.favoriteLyric}
                         onChange={(e) =>
                           setEditing({ ...editing, favoriteLyric: e.target.value })
                         }
                         placeholder="Kutipan lirik favorit yang tampil di jurnal meja, liner notes & katalog lo-fi..."
-                        className="mt-1 w-full resize-none rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 text-sm text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                        className="w-full resize-none rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                       />
-                    </label>
+                    </div>
                   ) : (
                     <>
-                      <label className="block">
-                        <span className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                      <div className="flex flex-col gap-1">
+                        <label
+                          htmlFor="vinyl-fav-song"
+                          className="inline-flex items-center gap-1 font-mono text-[10px] leading-4 font-semibold tracking-wider text-[#5C4432] uppercase"
+                        >
                           <Star className="h-3 w-3 text-[#B58A52]" />
                           Favorite Song (Opsional — Dari {editing.releaseType} Ini)
-                        </span>
+                        </label>
                         <input
+                          id="vinyl-fav-song"
                           type="text"
                           list="orihour-album-tracklist-datalist"
                           value={editing.favoriteSong}
@@ -1844,7 +1953,7 @@ export default function VinylLibraryTab({
                             setEditing({ ...editing, favoriteSong: e.target.value })
                           }
                           placeholder="Pilih dari daftar lagu di bawah atau ketik judul lagu favorit..."
-                          className="mt-1 w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 text-sm text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                          className="h-[36px] w-full rounded-xl border border-[#4A2E1B]/18 bg-white px-3 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                         />
                         <datalist id="orihour-album-tracklist-datalist">
                           {editing.tracks
@@ -1853,7 +1962,7 @@ export default function VinylLibraryTab({
                               <option key={t.id} value={t.title.trim()} />
                             ))}
                         </datalist>
-                      </label>
+                      </div>
 
                       {/* Tracklist Builder + Batch Folder / ZIP / Multi-MP3 Upload */}
                       <div className="rounded-2xl border border-[#4A2E1B]/15 bg-white/85 p-4">
@@ -1868,7 +1977,6 @@ export default function VinylLibraryTab({
                             </p>
                           </div>
 
-                          {/* Hidden Inputs for Folder and ZIP/Multi-Audio */}
                           <input
                             ref={bindFolderInputRef}
                             type="file"
@@ -1886,13 +1994,13 @@ export default function VinylLibraryTab({
                           />
                         </div>
 
-                        {/* Action Bar: Folder Upload, ZIP/Multi-MP3 Upload, Manual Add & Bulk Delete */}
+                        {/* Action Bar */}
                         <div className="mt-3 flex flex-wrap items-center gap-1.5">
                           <button
                             type="button"
                             disabled={Boolean(batchUploadProgress)}
                             onClick={() => folderInputRef.current?.click()}
-                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#4A2E1B] px-3 py-1.5 text-[11px] font-semibold text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] disabled:opacity-50"
+                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#4A2E1B] px-3 py-1.5 text-[11px] font-semibold whitespace-nowrap text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] disabled:opacity-50"
                           >
                             <FolderUp className="h-3.5 w-3.5" />
                             <span>Upload Folder Lagu</span>
@@ -1902,7 +2010,7 @@ export default function VinylLibraryTab({
                             type="button"
                             disabled={Boolean(batchUploadProgress)}
                             onClick={() => zipOrMultiInputRef.current?.click()}
-                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/25 bg-[#F2E7D7] px-3 py-1.5 text-[11px] font-semibold text-[#4A2E1B] transition hover:bg-[#E7D6BE] disabled:opacity-50"
+                            className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/25 bg-[#F2E7D7] px-3 py-1.5 text-[11px] font-semibold whitespace-nowrap text-[#4A2E1B] transition hover:bg-[#E7D6BE] disabled:opacity-50"
                           >
                             <FileArchive className="h-3.5 w-3.5" />
                             <span>Upload ZIP / Multi-MP3</span>
@@ -1912,7 +2020,7 @@ export default function VinylLibraryTab({
                             type="button"
                             disabled={Boolean(batchUploadProgress)}
                             onClick={handleAddTrackRow}
-                            className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#FAF5EC] disabled:opacity-50"
+                            className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-1.5 text-[11px] font-semibold whitespace-nowrap text-[#4A2E1B] hover:bg-[#FAF5EC] disabled:opacity-50"
                           >
                             <Plus className="h-3.5 w-3.5" />
                             <span>Tambah Manual</span>
@@ -1922,7 +2030,7 @@ export default function VinylLibraryTab({
                             <button
                               type="button"
                               onClick={toggleSelectAllTracks}
-                              className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-[#4A2E1B]/20 bg-[#FAF5EC] px-2.5 py-1.5 text-[11px] font-semibold text-[#4A2E1B] hover:bg-[#EFE4D3]"
+                              className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-[#4A2E1B]/20 bg-[#FAF5EC] px-2.5 py-1.5 text-[11px] font-semibold whitespace-nowrap text-[#4A2E1B] hover:bg-[#EFE4D3]"
                             >
                               {allTracksSelected ? (
                                 <CheckSquare className="h-3 w-3" />
@@ -1937,13 +2045,36 @@ export default function VinylLibraryTab({
                             <button
                               type="button"
                               onClick={requestRemoveSelectedTracks}
-                              className="inline-flex cursor-pointer items-center gap-1 rounded-xl bg-[#6E1D2C] px-2.5 py-1.5 text-[11px] font-semibold text-[#FAF5EC] hover:bg-[#571622]"
+                              className="inline-flex cursor-pointer items-center gap-1 rounded-xl bg-[#6E1D2C] px-2.5 py-1.5 text-[11px] font-semibold whitespace-nowrap text-[#FAF5EC] hover:bg-[#571622]"
                             >
                               <Trash2 className="h-3 w-3" />
                               <span>Hapus ({selectedTrackIds.size})</span>
                             </button>
                           )}
                         </div>
+
+                        {/* Quick Batch Audio Enhancement for All Uploaded Tracks */}
+                        {hasAnyTrackAudio && (
+                          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#4A2E1B]/12 bg-[#FAF5EC] px-3 py-2">
+                            <span className="inline-flex items-center gap-1 font-mono text-[9.5px] font-semibold tracking-wider text-[#7A5230] uppercase">
+                              <Sparkles className="h-3 w-3 text-[#B58A52]" />
+                              Terapkan Enhance ke Semua Track:
+                            </span>
+                            <div className="flex flex-wrap gap-1">
+                              {AUDIO_ENHANCE_PRESETS.map((preset) => (
+                                <button
+                                  key={preset.id}
+                                  type="button"
+                                  onClick={() => handleApplyEnhanceToAllTracks(preset.id)}
+                                  className="cursor-pointer rounded-full border border-[#4A2E1B]/18 bg-white px-2 py-0.5 font-mono text-[9.5px] font-semibold whitespace-nowrap text-[#4A2E1B] transition hover:bg-[#4A2E1B] hover:text-[#FAF5EC]"
+                                  title={preset.description}
+                                >
+                                  {preset.shortLabel}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
 
                         {/* Live Batch Upload Progress Indicator */}
                         {batchUploadProgress && (
@@ -2037,7 +2168,7 @@ export default function VinylLibraryTab({
                                       type="button"
                                       disabled={uploadingTrackId === trk.id}
                                       onClick={() => trackAudioRefs.current[trk.id]?.click()}
-                                      className={`inline-flex cursor-pointer items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50 ${
+                                      className={`inline-flex cursor-pointer items-center gap-1 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold whitespace-nowrap disabled:opacity-50 ${
                                         trk.audioUrl
                                           ? 'border-emerald-700/25 bg-emerald-500/10 text-emerald-900 hover:bg-emerald-500/20'
                                           : 'border-[#4A2E1B]/20 bg-white text-[#4A2E1B] hover:bg-[#EFE5D5]'
@@ -2101,11 +2232,26 @@ export default function VinylLibraryTab({
                                     )}
                                   </div>
 
+                                  {/* Compact Per-Track Audio Enhancer */}
+                                  {trk.audioUrl && (
+                                    <div className="pl-8">
+                                      <AudioEnhancerControl
+                                        compact
+                                        audioUrl={trk.audioUrl}
+                                        onChangeAudioUrl={(nextUrl) =>
+                                          updateTrackRow(trk.id, { audioUrl: nextUrl })
+                                        }
+                                      />
+                                    </div>
+                                  )}
+
                                   {trk.clipMode === 'snippet' && (
                                     <div className="pl-8">
                                       <SnippetTrimmer
                                         compact
-                                        audioUrl={trk.audioUrl || undefined}
+                                        audioUrl={
+                                          stripAudioEnhancePreset(trk.audioUrl) || undefined
+                                        }
                                         durationLabel={trk.duration}
                                         startSec={trk.clipStartSec ?? 0}
                                         endSec={trk.clipEndSec ?? 30}
@@ -2128,20 +2274,24 @@ export default function VinylLibraryTab({
                   )}
 
                   {/* Curator Notes */}
-                  <label className="block">
-                    <span className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
+                  <div className="flex flex-col gap-1">
+                    <label
+                      htmlFor="vinyl-liner-notes"
+                      className="block font-mono text-[10px] leading-4 font-semibold tracking-wider text-[#5C4432] uppercase"
+                    >
                       Curator Liner Notes (Opsional — Kosongkan Jika Tidak Ada)
-                    </span>
+                    </label>
                     <textarea
+                      id="vinyl-liner-notes"
                       rows={3}
                       value={editing.linerNotes}
                       onChange={(e) =>
                         setEditing({ ...editing, linerNotes: e.target.value })
                       }
                       placeholder="Cerita personal, suasana lagu/album, atau catatan kurator..."
-                      className="orihour-scroll mt-1 w-full resize-none rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 text-sm text-[#241A13] outline-none focus:border-[#4A2E1B]"
+                      className="orihour-scroll w-full resize-none rounded-xl border border-[#4A2E1B]/18 bg-white px-3 py-2 text-xs leading-relaxed text-[#241A13] outline-none focus:border-[#4A2E1B]"
                     />
-                  </label>
+                  </div>
                 </div>
               </div>
 

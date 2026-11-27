@@ -1,58 +1,47 @@
 @import "tailwindcss";
 
 @theme inline {
-  --font-sans: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-jakarta), system-ui, -apple-system, sans-serif;
   --font-serif: var(--font-instrument), Georgia, serif;
-  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, monospace;
 }
 
-html,
-body {
-  background-color: #120e0b;
-  color: #f7f4ec;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(168, 134, 104, 0.35) transparent;
-}
-
-/* Clean Floating Pill Scrollbar for All Scrollable Cards & Modals */
-.orihour-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(110, 70, 44, 0.28) transparent;
+html {
+  scroll-behavior: smooth;
   scrollbar-gutter: stable;
 }
 
+body {
+  background-color: #120e0b;
+  color: #241a13;
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom warm scrollbar for Orihour modals, catalog & admin panels */
+.orihour-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(74, 46, 27, 0.36) transparent;
+}
+
 .orihour-scroll::-webkit-scrollbar {
-  width: 11px;
-  height: 11px;
+  width: 8px;
+  height: 8px;
 }
 
 .orihour-scroll::-webkit-scrollbar-track {
   background: transparent;
-  margin-block: 10px;
 }
 
 .orihour-scroll::-webkit-scrollbar-thumb {
-  background-color: rgba(110, 70, 44, 0.24);
+  background-color: rgba(74, 46, 27, 0.34);
   border-radius: 9999px;
-  border: 3px solid transparent;
+  border: 2px solid transparent;
   background-clip: content-box;
-  transition: background-color 0.2s ease;
 }
 
 .orihour-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(132, 37, 54, 0.62);
-}
-
-.orihour-scroll::-webkit-scrollbar-thumb:active {
-  background-color: rgba(132, 37, 54, 0.85);
-}
-
-.orihour-scroll::-webkit-scrollbar-button {
-  display: none;
-  width: 0;
-  height: 0;
-}
-
-.orihour-scroll::-webkit-scrollbar-corner {
-  background: transparent;
+  background-color: rgba(74, 46, 27, 0.58);
 }
