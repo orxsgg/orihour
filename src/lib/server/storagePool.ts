@@ -3,7 +3,7 @@ import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-export type StorageProvider = 'supabase' | 'r2';
+export type StorageProvider = 'supabase' | 'b2';
 
 export interface StorageAccountRow {
   id: string;
@@ -193,6 +193,41 @@ export function maskSecret(plain: string): string {
   return `••••••••${plain.slice(-4)}`;
 }
 
+/* ============================================================
+   Backblaze B2 Endpoint & Region Normalization
+   ============================================================ */
+
+export function normalizeB2Endpoint(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  const withProto = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+  try {
+    const parsed = new URL(withProto);
+    const host = parsed.hostname.toLowerCase();
+    // Jika user menempel virtual-hosted URL (bucket.s3.<region>.backblazeb2.com),
+    // rapikan menjadi path-style endpoint (https://s3.<region>.backblazeb2.com)
+    const b2Match = host.match(/(?:^|\.)s3\.([a-z0-9-]+)\.backblazeb2\.com$/i);
+    if (b2Match?.[1]) {
+      return `https://s3.${b2Match[1]}.backblazeb2.com`;
+    }
+    return parsed.origin;
+  } catch {
+    return withProto;
+  }
+}
+
+export function extractB2Region(endpointUrl: string): string {
+  try {
+    const host = new URL(endpointUrl).hostname.toLowerCase();
+    const match = host.match(/(?:^|\.)s3\.([a-z0-9-]+)\.backblazeb2\.com$/i);
+    if (match?.[1]) return match[1];
+  } catch {
+    // Fallback below
+  }
+  return 'us-west-004';
+}
+
 export function resolveAccountCredentials(row: StorageAccountRow) {
   if (row.use_env_credentials && row.provider === 'supabase') {
     const envUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/+$/, '');
@@ -206,23 +241,21 @@ export function resolveAccountCredentials(row: StorageAccountRow) {
     };
   }
 
+  const endpointUrl = (row.endpoint_url || '').replace(/\/+$/, '');
+  const bucket = (row.bucket || 'orihour-media').trim();
+  const explicitPublic = (row.public_base_url || '').replace(/\/+$/, '');
+  const publicBaseUrl =
+    row.provider === 'b2'
+      ? explicitPublic || (endpointUrl && bucket ? `${endpointUrl}/${bucket}` : '')
+      : endpointUrl;
+
   return {
-    endpointUrl: (row.endpoint_url || '').replace(/\/+$/, ''),
-    publicBaseUrl: (row.public_base_url || '').replace(/\/+$/, ''),
+    endpointUrl,
+    publicBaseUrl,
     accessKeyId: (row.access_key_id || '').trim(),
     secret: decryptSecret(row.encrypted_secret || ''),
-    bucket: (row.bucket || 'orihour-media').trim(),
+    bucket,
   };
-}
-
-export function normalizeR2Endpoint(raw: string): string {
-  const trimmed = raw.trim().replace(/\/+$/, '');
-  if (!trimmed) return '';
-  if (/^https?:\/\//i.test(trimmed)) {
-    return trimmed;
-  }
-  // If user pasted just the Cloudflare Account ID, build full R2 S3 endpoint automatically
-  return `https://${trimmed}.r2.cloudflarestorage.com`;
 }
 
 /* ============================================================
@@ -380,11 +413,11 @@ export function buildStorageOverview(
   if (enabledAccounts.length === 0) {
     warningSeverity = 'full';
     warningMessage =
-      'Tidak ada akun penyimpanan yang aktif. Aktifkan atau tambahkan akun Supabase / Cloudflare R2 di tab Penyimpanan.';
+      'Tidak ada akun penyimpanan yang aktif. Aktifkan atau tambahkan akun Supabase / Backblaze B2 di tab Penyimpanan.';
   } else if (allEnabledFull) {
     warningSeverity = 'full';
     warningMessage =
-      'Semua akun penyimpanan sudah mencapai batas penuh! Tambahkan akun Supabase baru atau Cloudflare R2 (10 GB gratis) agar upload tidak terhambat.';
+      'Semua akun penyimpanan sudah mencapai batas penuh! Tambahkan akun Supabase baru atau Backblaze B2 (10 GB gratis tanpa kartu kredit) agar upload tidak terhambat.';
   } else if (activeAcc && activeAcc.healthStatus === 'full') {
     warningSeverity = 'full';
     warningMessage = settings.auto_failover
@@ -392,7 +425,7 @@ export function buildStorageOverview(
       : `Penyimpanan aktif "${activeAcc.name}" sudah penuh (${activeAcc.usagePct}%). Pindahkan akun aktif atau aktifkan Auto-Failover di tab Penyimpanan.`;
   } else if (activeAcc && activeAcc.healthStatus === 'warning') {
     warningSeverity = 'warning';
-    warningMessage = `Penyimpanan aktif "${activeAcc.name}" hampir penuh (${activeAcc.usagePct}% terpakai). Siapkan akun cadangan Supabase atau Cloudflare R2.`;
+    warningMessage = `Penyimpanan aktif "${activeAcc.name}" hampir penuh (${activeAcc.usagePct}% terpakai). Siapkan akun cadangan Supabase atau Backblaze B2.`;
   } else if (anyFull || anyWarning) {
     const flagged = accounts.find(
       (a) => a.isEnabled && (a.healthStatus === 'full' || a.healthStatus === 'warning')
@@ -420,7 +453,7 @@ export function buildStorageOverview(
 }
 
 /* ============================================================
-   Native AWS Signature V4 (Cloudflare R2 S3-Compatible API)
+   Native AWS Signature V4 (Backblaze B2 S3-Compatible API)
    Zero External Dependencies!
    ============================================================ */
 
@@ -454,14 +487,19 @@ function getSigV4Timestamps(now = new Date()) {
   };
 }
 
-function getSigningKey(secretAccessKey: string, dateStamp: string, region = 'auto', service = 's3') {
+function getSigningKey(
+  secretAccessKey: string,
+  dateStamp: string,
+  region: string,
+  service = 's3'
+) {
   const kDate = hmacSha256(`AWS4${secretAccessKey}`, dateStamp);
   const kRegion = hmacSha256(kDate, region);
   const kService = hmacSha256(kRegion, service);
   return hmacSha256(kService, 'aws4_request');
 }
 
-export function createR2PresignedPutUrl(params: {
+export function createB2PresignedPutUrl(params: {
   endpointUrl: string;
   bucket: string;
   objectKey: string;
@@ -471,7 +509,7 @@ export function createR2PresignedPutUrl(params: {
 }): string {
   const parsed = new URL(params.endpointUrl);
   const host = parsed.host;
-  const region = 'auto';
+  const region = extractB2Region(params.endpointUrl);
   const service = 's3';
   const expiresSec = params.expiresSec ?? 900;
   const { amzDate, dateStamp } = getSigV4Timestamps();
@@ -518,7 +556,7 @@ export function createR2PresignedPutUrl(params: {
   return `${parsed.origin}${canonicalUri}?${canonicalQuery}&X-Amz-Signature=${signature}`;
 }
 
-async function signedR2GetRequest(params: {
+async function signedB2GetRequest(params: {
   endpointUrl: string;
   bucket: string;
   query: Record<string, string>;
@@ -527,7 +565,7 @@ async function signedR2GetRequest(params: {
 }): Promise<Response> {
   const parsed = new URL(params.endpointUrl);
   const host = parsed.host;
-  const region = 'auto';
+  const region = extractB2Region(params.endpointUrl);
   const service = 's3';
   const { amzDate, dateStamp } = getSigV4Timestamps();
   const payloadHash = sha256Hex('');
@@ -594,7 +632,7 @@ function decodeXmlEntities(str: string): string {
 }
 
 /* ============================================================
-   Scan Real Storage Usage & Keep-Alive Ping (Supabase & R2)
+   Scan Real Storage Usage & Keep-Alive Ping (Supabase & B2)
    ============================================================ */
 
 async function scanSupabaseBucketRecursive(
@@ -624,7 +662,6 @@ async function scanSupabaseBucketRecursive(
     const items = data || [];
     for (const item of items) {
       if (!item.name || item.name === '.emptyFolderPlaceholder') continue;
-      // Folders in Supabase storage list have id === null
       if (item.id === null) {
         const subPrefix = prefix ? `${prefix}/${item.name}` : item.name;
         const sub = await scanSupabaseBucketRecursive(client, bucket, subPrefix, depth + 1);
@@ -661,9 +698,9 @@ export async function scanAccountUsage(
     return { usedBytes: res.totalBytes, fileCount: res.fileCount };
   }
 
-  // Cloudflare R2 ListObjectsV2 pagination
+  // Backblaze B2 ListObjectsV2 pagination
   if (!creds.endpointUrl || !creds.accessKeyId || !creds.secret) {
-    throw new Error(`Kredensial Cloudflare R2 untuk "${row.name}" belum lengkap.`);
+    throw new Error(`Kredensial Backblaze B2 untuk "${row.name}" belum lengkap.`);
   }
 
   let totalBytes = 0;
@@ -681,7 +718,7 @@ export async function scanAccountUsage(
       query['continuation-token'] = continuationToken;
     }
 
-    const res = await signedR2GetRequest({
+    const res = await signedB2GetRequest({
       endpointUrl: creds.endpointUrl,
       bucket: creds.bucket,
       query,
@@ -691,7 +728,7 @@ export async function scanAccountUsage(
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new Error(`R2 API error (${res.status}): ${text.slice(0, 180)}`);
+      throw new Error(`Backblaze B2 API error (${res.status}): ${text.slice(0, 180)}`);
     }
 
     const xml = await res.text();
@@ -735,11 +772,11 @@ export async function pingStorageAccount(
       return { ok: true, statusText: 'Online (Active)' };
     }
 
-    // Cloudflare R2 lightweight ping (max-keys=1)
+    // Backblaze B2 lightweight ping (max-keys=1)
     if (!creds.endpointUrl || !creds.accessKeyId || !creds.secret) {
-      return { ok: false, statusText: 'Kredensial R2 kosong' };
+      return { ok: false, statusText: 'Kredensial B2 kosong' };
     }
-    const res = await signedR2GetRequest({
+    const res = await signedB2GetRequest({
       endpointUrl: creds.endpointUrl,
       bucket: creds.bucket,
       query: { 'list-type': '2', 'max-keys': '1' },
@@ -749,7 +786,7 @@ export async function pingStorageAccount(
     if (!res.ok) {
       return { ok: false, statusText: `HTTP ${res.status}` };
     }
-    return { ok: true, statusText: 'Online (R2 Ready)' };
+    return { ok: true, statusText: 'Online (B2 Ready)' };
   } catch (err) {
     return {
       ok: false,
@@ -811,7 +848,7 @@ export function selectUploadTargetAccount(
 
   const candidates = enabled
     .filter((r) => r.id !== active.id)
-    .sort((a, b) => (a.priority - b.priority) || a.created_at.localeCompare(b.created_at));
+    .sort((a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at));
 
   const fallback = candidates.find(fitsAccount);
   if (!fallback) {
@@ -820,7 +857,7 @@ export function selectUploadTargetAccount(
       didFailover: false,
       failoverFromName: active.name,
       error:
-        'Semua akun penyimpanan yang aktif sudah penuh! Tambahkan akun Supabase baru atau Cloudflare R2 (10 GB gratis) di tab Penyimpanan.',
+        'Semua akun penyimpanan yang aktif sudah penuh! Tambahkan akun Supabase baru atau Backblaze B2 (10 GB gratis tanpa kartu kredit) di tab Penyimpanan.',
     };
   }
 
@@ -875,14 +912,14 @@ export async function generatePresignedUploadForAccount(params: {
     };
   }
 
-  // Cloudflare R2
+  // Backblaze B2 (S3-Compatible)
   if (!creds.endpointUrl || !creds.accessKeyId || !creds.secret || !creds.publicBaseUrl) {
     throw new Error(
-      `Konfigurasi Cloudflare R2 untuk "${params.account.name}" belum lengkap (butuh Endpoint/Account ID, Access Key, Secret Key, dan Public URL).`
+      `Konfigurasi Backblaze B2 untuk "${params.account.name}" belum lengkap (butuh S3 Endpoint, keyID, dan applicationKey).`
     );
   }
 
-  const uploadUrl = createR2PresignedPutUrl({
+  const uploadUrl = createB2PresignedPutUrl({
     endpointUrl: creds.endpointUrl,
     bucket: creds.bucket,
     objectKey: params.objectKey,
@@ -894,7 +931,7 @@ export async function generatePresignedUploadForAccount(params: {
   const publicUrl = `${creds.publicBaseUrl}/${params.objectKey}`;
 
   return {
-    provider: 'r2' as const,
+    provider: 'b2' as const,
     uploadUrl,
     publicUrl,
     objectKey: params.objectKey,

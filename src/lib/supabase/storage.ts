@@ -3,7 +3,7 @@ export const STORAGE_UPDATED_EVENT = 'orihour:storage-updated';
 interface PresignResponse {
   accountId: string;
   accountName: string;
-  provider: 'supabase' | 'r2';
+  provider: 'supabase' | 'b2';
   uploadUrl: string;
   publicUrl: string;
   objectKey: string;
@@ -63,7 +63,7 @@ function inferExtension(fileOrBlob: File | Blob, explicitExt?: string): string {
 
 /**
  * Mengunggah media (cover, MP3, poster, avatar) melalui Multi-Storage Pool
- * (mendukung multi-akun Supabase Storage & Cloudflare R2 dengan Auto-Failover).
+ * (mendukung multi-akun Supabase Storage & Backblaze B2 dengan Auto-Failover).
  */
 export async function uploadMediaToSupabase(
   fileOrBlob: File | Blob,
@@ -97,7 +97,7 @@ export async function uploadMediaToSupabase(
     );
   }
 
-  // 2. Upload langsung dari browser ke Supabase Storage / Cloudflare R2 (lolos limit 4.5 MB Vercel)
+  // 2. Upload langsung dari browser ke Supabase Storage / Backblaze B2 (lolos limit 4.5 MB Vercel)
   let uploadRes: Response;
   try {
     uploadRes = await fetch(presignData.uploadUrl, {
@@ -109,8 +109,8 @@ export async function uploadMediaToSupabase(
     });
   } catch {
     const hint =
-      presignData.provider === 'r2'
-        ? ' Pastikan aturan CORS di bucket Cloudflare R2 sudah mengizinkan origin website ini (method PUT & GET).'
+      presignData.provider === 'b2'
+        ? ' Pastikan CORS Rules di bucket Backblaze B2 sudah mengizinkan S3 Compatible API ("Share everything in this bucket with every origin").'
         : ' Periksa koneksi internet atau status proyek Supabase tujuan.';
     throw new Error(`Upload ke "${presignData.accountName}" gagal terhubung.${hint}`);
   }
@@ -118,8 +118,8 @@ export async function uploadMediaToSupabase(
   if (!uploadRes.ok) {
     const errText = await uploadRes.text().catch(() => '');
     const hint =
-      presignData.provider === 'r2'
-        ? ' Cek izin API Token (Object Read & Write) dan aturan CORS pada bucket R2.'
+      presignData.provider === 'b2'
+        ? ' Cek izin Application Key (Read and Write), bucket Public, dan CORS Rules pada bucket Backblaze B2.'
         : ' Cek apakah bucket sudah dibuat (public) dan kuota akun masih tersedia.';
     throw new Error(
       `Gagal mengunggah ke "${presignData.accountName}" (HTTP ${uploadRes.status}).${hint}${

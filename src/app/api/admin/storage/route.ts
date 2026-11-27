@@ -5,7 +5,7 @@ import {
   encryptSecret,
   ensurePrimaryStorageBootstrapped,
   getPrimaryAdminDb,
-  normalizeR2Endpoint,
+  normalizeB2Endpoint,
   pingStorageAccount,
   requireAdminSession,
   scanAccountUsage,
@@ -78,20 +78,21 @@ export async function POST(req: NextRequest) {
 
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const name = cleanStr(body.name, 80);
-    const provider = (body.provider === 'r2' ? 'r2' : 'supabase') as StorageProvider;
+    const provider = (body.provider === 'b2' ? 'b2' : 'supabase') as StorageProvider;
     const bucket = cleanStr(body.bucket, 80) || 'orihour-media';
     const rawEndpoint = cleanStr(body.endpointUrl, 300);
     const endpointUrl =
-      provider === 'r2'
-        ? normalizeR2Endpoint(rawEndpoint)
+      provider === 'b2'
+        ? normalizeB2Endpoint(rawEndpoint)
         : rawEndpoint.replace(/\/+$/, '');
+    const customPublic = cleanStr(body.publicBaseUrl, 300).replace(/\/+$/, '');
     const publicBaseUrl =
-      provider === 'r2'
-        ? cleanStr(body.publicBaseUrl, 300).replace(/\/+$/, '')
+      provider === 'b2'
+        ? customPublic || (endpointUrl ? `${endpointUrl}/${bucket}` : '')
         : endpointUrl;
-    const accessKeyId = provider === 'r2' ? cleanStr(body.accessKeyId, 160) : '';
+    const accessKeyId = provider === 'b2' ? cleanStr(body.accessKeyId, 160) : '';
     const secret = cleanStr(body.secret, 500);
-    const defaultQuotaMb = provider === 'r2' ? 10240 : 1024;
+    const defaultQuotaMb = provider === 'b2' ? 10240 : 1024;
     const quotaMb = Math.max(
       10,
       Math.min(1048576, Math.round(Number(body.quotaMb) || defaultQuotaMb))
@@ -106,8 +107,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            provider === 'r2'
-              ? 'Account ID atau Endpoint Cloudflare R2 tidak valid.'
+            provider === 'b2'
+              ? 'S3 Endpoint Backblaze B2 tidak valid (contoh: s3.us-west-004.backblazeb2.com).'
               : 'URL Proyek Supabase wajib diawali https://',
         },
         { status: 400 }
@@ -117,19 +118,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            provider === 'r2'
-              ? 'Secret Access Key Cloudflare R2 wajib diisi.'
+            provider === 'b2'
+              ? 'Application Key (Secret) Backblaze B2 wajib diisi.'
               : 'Service Role Key Supabase wajib diisi.',
         },
         { status: 400 }
       );
     }
-    if (provider === 'r2' && (!accessKeyId || !publicBaseUrl || !/^https?:\/\//i.test(publicBaseUrl))) {
+    if (provider === 'b2' && !accessKeyId) {
       return NextResponse.json(
-        {
-          error:
-            'Cloudflare R2 membutuhkan Access Key ID dan Public Domain URL (misal: https://pub-xxxx.r2.dev).',
-        },
+        { error: 'Key ID (keyID) Backblaze B2 wajib diisi.' },
+        { status: 400 }
+      );
+    }
+    if (provider === 'b2' && customPublic && !/^https?:\/\//i.test(customPublic)) {
+      return NextResponse.json(
+        { error: 'Public URL kustom Backblaze B2 harus diawali https://' },
         { status: 400 }
       );
     }
@@ -168,7 +172,7 @@ export async function POST(req: NextRequest) {
     if (!ping.ok) {
       return NextResponse.json(
         {
-          error: `Koneksi ke "${name}" gagal diverifikasi (${ping.statusText}). Periksa URL, nama bucket, dan kunci akses.`,
+          error: `Koneksi ke "${name}" gagal diverifikasi (${ping.statusText}). Periksa Endpoint, nama bucket, dan kunci akses.`,
         },
         { status: 400 }
       );
@@ -296,7 +300,7 @@ export async function PATCH(req: NextRequest) {
               file_count: scanned.fileCount,
               last_scanned_at: nowIso,
               last_ping_at: nowIso,
-              last_ping_status: acc.provider === 'r2' ? 'Online (R2 Ready)' : 'Online (Active)',
+              last_ping_status: acc.provider === 'b2' ? 'Online (B2 Ready)' : 'Online (Active)',
               updated_at: nowIso,
             })
             .eq('id', acc.id);
@@ -330,6 +334,9 @@ export async function PATCH(req: NextRequest) {
       }
 
       const patch: Record<string, unknown> = { updated_at: nowIso };
+      let nextBucket = existing.bucket;
+      let nextEndpoint = existing.endpoint_url;
+
       if ('name' in body) {
         const name = cleanStr(body.name, 80);
         if (name) patch.name = name;
@@ -346,25 +353,29 @@ export async function PATCH(req: NextRequest) {
       if (!existing.use_env_credentials) {
         if ('bucket' in body) {
           const bucket = cleanStr(body.bucket, 80);
-          if (bucket) patch.bucket = bucket;
+          if (bucket) {
+            patch.bucket = bucket;
+            nextBucket = bucket;
+          }
         }
         if ('endpointUrl' in body) {
           const rawEp = cleanStr(body.endpointUrl, 300);
           if (rawEp) {
-            patch.endpoint_url =
-              existing.provider === 'r2'
-                ? normalizeR2Endpoint(rawEp)
+            nextEndpoint =
+              existing.provider === 'b2'
+                ? normalizeB2Endpoint(rawEp)
                 : rawEp.replace(/\/+$/, '');
+            patch.endpoint_url = nextEndpoint;
             if (existing.provider === 'supabase') {
-              patch.public_base_url = patch.endpoint_url;
+              patch.public_base_url = nextEndpoint;
             }
           }
         }
-        if ('publicBaseUrl' in body && existing.provider === 'r2') {
+        if ('publicBaseUrl' in body && existing.provider === 'b2') {
           const pub = cleanStr(body.publicBaseUrl, 300).replace(/\/+$/, '');
-          if (pub) patch.public_base_url = pub;
+          patch.public_base_url = pub || `${nextEndpoint}/${nextBucket}`;
         }
-        if ('accessKeyId' in body && existing.provider === 'r2') {
+        if ('accessKeyId' in body && existing.provider === 'b2') {
           const ak = cleanStr(body.accessKeyId, 160);
           if (ak) patch.access_key_id = ak;
         }
@@ -413,7 +424,10 @@ export async function DELETE(req: NextRequest) {
     }
     if (target.use_env_credentials) {
       return NextResponse.json(
-        { error: 'Akun Supabase Utama (.env) tidak dapat dihapus. Kamu bisa menonaktifkannya atau memindahkan akun aktif ke akun lain.' },
+        {
+          error:
+            'Akun Supabase Utama (.env) tidak dapat dihapus. Kamu bisa menonaktifkannya atau memindahkan akun aktif ke akun lain.',
+        },
         { status: 400 }
       );
     }

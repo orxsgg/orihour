@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 
-export type StorageProvider = 'supabase' | 'r2';
+export type StorageProvider = 'supabase' | 'b2';
 export type StorageHealthStatus = 'ok' | 'warning' | 'full' | 'disabled';
 
 export interface PublicStorageAccount {
@@ -95,19 +95,6 @@ interface AccountFormState {
   priority: number;
   setAsActive: boolean;
 }
-
-const R2_CORS_JSON = `[
-  {
-    "AllowedOrigins": [
-      "https://orihour.vercel.app",
-      "http://localhost:3000"
-    ],
-    "AllowedMethods": ["GET", "PUT", "HEAD"],
-    "AllowedHeaders": ["*"],
-    "ExposeHeaders": ["ETag"],
-    "MaxAgeSeconds": 3600
-  }
-]`;
 
 function formatBytes(bytes: number): string {
   const safe = Math.max(0, Number(bytes) || 0);
@@ -333,16 +320,16 @@ export default function StoragePoolTab({
     const nextPriority = (overview?.accounts.length || 1) + 1;
     setEditing({
       name:
-        provider === 'r2'
-          ? `Cloudflare R2 #${nextPriority}`
+        provider === 'b2'
+          ? `Backblaze B2 #${nextPriority}`
           : `Supabase Cadangan #${nextPriority}`,
       provider,
-      bucket: 'orihour-media',
+      bucket: provider === 'b2' ? '' : 'orihour-media',
       endpointUrl: '',
       publicBaseUrl: '',
       accessKeyId: '',
       secret: '',
-      quotaMb: provider === 'r2' ? 10240 : 1024,
+      quotaMb: provider === 'b2' ? 10240 : 1024,
       priority: nextPriority,
       setAsActive: false,
     });
@@ -500,7 +487,7 @@ export default function StoragePoolTab({
           </p>
           <p className="mt-0.5 font-mono text-[10px] text-[#6E5643]">
             {activeAccount
-              ? `${activeAccount.provider === 'r2' ? 'Cloudflare R2' : 'Supabase'} · ${
+              ? `${activeAccount.provider === 'b2' ? 'Backblaze B2' : 'Supabase'} · ${
                   activeAccount.usagePct
                 }% terpakai`
               : 'Pilih akun aktif di bawah'}
@@ -552,7 +539,7 @@ export default function StoragePoolTab({
         <div className="flex flex-wrap items-center justify-between gap-2.5">
           <div>
             <h2 className="font-serif text-2xl leading-tight text-[#241A13]">
-              Multi-Storage Pool (Supabase &amp; Cloudflare R2)
+              Multi-Storage Pool (Supabase &amp; Backblaze B2)
             </h2>
             <p className="mt-0.5 text-xs text-[#655040]">
               Database utama tetap satu, sedangkan file audio MP3 dan cover dibagi otomatis ke akun penyimpanan yang masih longgar.
@@ -571,11 +558,11 @@ export default function StoragePoolTab({
 
             <button
               type="button"
-              onClick={() => openAddModal('r2')}
+              onClick={() => openAddModal('b2')}
               className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#4A2E1B] px-3.5 py-2 text-xs font-semibold text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213]"
             >
               <Cloud className="h-3.5 w-3.5" />
-              <span>Tambah Cloudflare R2</span>
+              <span>Tambah Backblaze B2</span>
             </button>
           </div>
         </div>
@@ -678,7 +665,7 @@ export default function StoragePoolTab({
             className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/16 bg-white/80 px-3 py-1.5 text-xs font-semibold text-[#5C4432] transition hover:bg-white"
           >
             <HelpCircle className="h-3.5 w-3.5 text-[#7A5230]" />
-            <span>Panduan R2 &amp; Cron</span>
+            <span>Panduan Backblaze B2 &amp; Cron</span>
             {showGuide ? (
               <ChevronUp className="h-3.5 w-3.5" />
             ) : (
@@ -687,45 +674,31 @@ export default function StoragePoolTab({
           </button>
         </div>
 
-        {/* Expandable Setup Guide for Cloudflare R2 CORS & Cron Keep-Alive */}
+        {/* Expandable Setup Guide for Backblaze B2 & Cron Keep-Alive */}
         {showGuide && (
           <div className="grid grid-cols-1 gap-4 rounded-2xl border border-[#4A2E1B]/14 bg-white/88 p-4 text-xs text-[#3A2B20] lg:grid-cols-2">
             <div className="space-y-2">
               <p className="inline-flex items-center gap-1.5 font-mono text-[10px] font-semibold tracking-wider text-[#7A5230] uppercase">
                 <Cloud className="h-3.5 w-3.5" />
-                SETUP CLOUDFLARE R2 (10 GB GRATIS, BANDWIDTH UNLIMITED)
+                SETUP BACKBLAZE B2 (10 GB GRATIS, TANPA KARTU KREDIT)
               </p>
-              <ol className="list-decimal space-y-1 pl-4 text-[11.5px] leading-relaxed">
+              <ol className="list-decimal space-y-1.5 pl-4 text-[11.5px] leading-relaxed">
                 <li>
-                  Di dashboard Cloudflare R2, buat bucket baru (misal <code>orihour-media</code>), lalu aktifkan <strong>Public Development URL</strong> (<code>https://pub-xxxx.r2.dev</code>) atau Custom Domain.
+                  Daftar akun gratis di <strong>backblaze.com/cloud-storage</strong> (cukup verifikasi email &amp; nomor HP, tidak perlu kartu kredit).
                 </li>
                 <li>
-                  Masuk ke <strong>Manage R2 API Tokens → Create API Token</strong> (izin: <em>Object Read &amp; Write</em>) untuk menyalin <strong>Access Key ID</strong>, <strong>Secret Access Key</strong>, dan <strong>Account ID</strong>.
+                  Buka menu <strong>Buckets → Create a Bucket</strong>. Buat nama bucket unik (misal <code>orihour-media-01</code>), lalu wajib pilih <strong>Files in Bucket are: Public</strong>. Salin <strong>Endpoint</strong> yang tampil di kartu bucket (contoh: <code>s3.us-west-004.backblazeb2.com</code>).
                 </li>
                 <li>
-                  Di tab <strong>Settings → CORS Policy</strong> pada bucket R2, tempel aturan JSON berikut agar browser admin diizinkan mengunggah langsung:
+                  Di kartu bucket tersebut, klik <strong>CORS Rules</strong> → pilih <strong>Share everything in this bucket with every origin</strong> → centang <strong>S3 Compatible API</strong> → klik <strong>Update CORS Rules</strong>.
+                </li>
+                <li>
+                  Buka menu kiri <strong>Application Keys → Add a New Application Key</strong>: pilih bucket kamu, set <strong>Type of Access: Read and Write</strong>, lalu klik <strong>Create New Key</strong>.
+                </li>
+                <li>
+                  Langsung salin <strong>keyID</strong> dan <strong>applicationKey</strong> (hanya tampil sekali), lalu masukkan ke form <strong>Tambah Backblaze B2</strong>.
                 </li>
               </ol>
-              <div className="relative rounded-xl border border-[#4A2E1B]/15 bg-[#1C140E] p-3 font-mono text-[10px] text-[#FAF5EC]">
-                <button
-                  type="button"
-                  onClick={() => void copyText('cors', R2_CORS_JSON)}
-                  className="absolute top-2 right-2 inline-flex cursor-pointer items-center gap-1 rounded-lg bg-[#FAF5EC]/15 px-2 py-1 text-[9.5px] font-semibold text-[#FAF5EC] hover:bg-[#FAF5EC]/25"
-                >
-                  {copiedKey === 'cors' ? (
-                    <>
-                      <Check className="h-3 w-3 text-emerald-300" />
-                      <span>Tersalin</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="h-3 w-3" />
-                      <span>Salin JSON</span>
-                    </>
-                  )}
-                </button>
-                <pre className="overflow-x-auto pr-16">{R2_CORS_JSON}</pre>
-              </div>
             </div>
 
             <div className="space-y-2">
@@ -734,7 +707,7 @@ export default function StoragePoolTab({
                 SETUP CRON JOB KEEP-ALIVE (ANTI AUTO-PAUSE 7 HARI)
               </p>
               <p className="text-[11.5px] leading-relaxed">
-                Supabase Free Tier akan otomatis tidur setelah 7 hari tanpa aktivitas. Endpoint di bawah otomatis menyapa Database Utama dan seluruh akun Supabase cadangan:
+                Supabase Free Tier akan otomatis tidur setelah 7 hari tanpa aktivitas (sedangkan Backblaze B2 tidak pernah auto-pause). Endpoint di bawah otomatis menyapa Database Utama dan seluruh akun terdaftar:
               </p>
               <div className="flex items-center justify-between gap-2 rounded-xl border border-[#4A2E1B]/15 bg-[#FAF5EC] px-3 py-2 font-mono text-[10.5px] text-[#241A13]">
                 <span className="truncate">{keepAliveEndpoint}</span>
@@ -758,13 +731,13 @@ export default function StoragePoolTab({
               </div>
               <ol className="list-decimal space-y-1 pl-4 text-[11.5px] leading-relaxed">
                 <li>
-                  Tambahkan Environment Variable <code>CRON_SECRET</code> (isi teks acak panjang) di <strong>Vercel → Settings → Environment Variables</strong>, lalu redeploy.
+                  Pastikan Environment Variable <code>CRON_SECRET</code> sudah dipasang di <strong>Vercel → Settings → Environment Variables</strong>.
                 </li>
                 <li>
-                  Di GitHub repo Orihour → <strong>Settings → Secrets and variables → Actions</strong>, tambahkan secret <code>CRON_SECRET</code> (sama persis dengan Vercel) dan <code>ORIHOUR_APP_URL</code> (misal <code>https://orihour.vercel.app</code>).
+                  Di GitHub repo Orihour → <strong>Settings → Secrets and variables → Actions</strong>, pastikan secret <code>CRON_SECRET</code> dan <code>ORIHOUR_APP_URL</code> sudah tersimpan.
                 </li>
                 <li>
-                  Workflow <code>.github/workflows/keep-alive.yml</code> akan otomatis berjalan tiap 3 hari sekali.
+                  Workflow <code>.github/workflows/keep-alive.yml</code> otomatis berjalan tiap 3 hari sekali.
                 </li>
               </ol>
             </div>
@@ -820,12 +793,12 @@ export default function StoragePoolTab({
                   <div className="flex min-w-0 items-center gap-2.5">
                     <div
                       className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
-                        acc.provider === 'r2'
+                        acc.provider === 'b2'
                           ? 'bg-[#C89B54]/25 text-[#5C3B14]'
                           : 'bg-[#4A2E1B]/12 text-[#4A2E1B]'
                       }`}
                     >
-                      {acc.provider === 'r2' ? (
+                      {acc.provider === 'b2' ? (
                         <Cloud className="h-5 w-5" />
                       ) : (
                         <Database className="h-5 w-5" />
@@ -844,7 +817,7 @@ export default function StoragePoolTab({
                         )}
                       </div>
                       <p className="truncate font-mono text-[10px] text-[#7A624E]">
-                        {acc.provider === 'r2' ? 'Cloudflare R2' : 'Supabase Storage'} · Bucket:{' '}
+                        {acc.provider === 'b2' ? 'Backblaze B2' : 'Supabase Storage'} · Bucket:{' '}
                         <strong>{acc.bucket}</strong> · Prioritas #{acc.priority}
                       </p>
                     </div>
@@ -892,7 +865,7 @@ export default function StoragePoolTab({
                     <span className="text-[#8A7360]">Endpoint:</span>{' '}
                     {acc.endpointUrl || '-'}
                   </p>
-                  {acc.provider === 'r2' && (
+                  {acc.provider === 'b2' && (
                     <p className="truncate">
                       <span className="text-[#8A7360]">Public URL:</span>{' '}
                       {acc.publicBaseUrl || '-'}
@@ -999,7 +972,7 @@ export default function StoragePoolTab({
                   <HardDrive className="h-4 w-4 text-[#4A2E1B]" />
                   <h3 className="font-serif text-xl text-[#241A13]">
                     {editing.id
-                      ? `Edit Akun (${editing.provider === 'r2' ? 'Cloudflare R2' : 'Supabase'})`
+                      ? `Edit Akun (${editing.provider === 'b2' ? 'Backblaze B2' : 'Supabase'})`
                       : 'Tambah Akun Penyimpanan Baru'}
                   </h3>
                 </div>
@@ -1027,6 +1000,7 @@ export default function StoragePoolTab({
                           setEditing({
                             ...editing,
                             provider: 'supabase',
+                            bucket: editing.bucket || 'orihour-media',
                             quotaMb: 1024,
                           })
                         }
@@ -1045,18 +1019,20 @@ export default function StoragePoolTab({
                         onClick={() =>
                           setEditing({
                             ...editing,
-                            provider: 'r2',
+                            provider: 'b2',
+                            bucket:
+                              editing.bucket === 'orihour-media' ? '' : editing.bucket,
                             quotaMb: 10240,
                           })
                         }
                         className={`flex cursor-pointer items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-xs font-semibold transition ${
-                          editing.provider === 'r2'
+                          editing.provider === 'b2'
                             ? 'border-[#4A2E1B] bg-[#4A2E1B] text-[#FAF5EC]'
                             : 'border-[#4A2E1B]/18 bg-white text-[#4A2E1B] hover:bg-[#FAF5EC]'
                         }`}
                       >
                         <Cloud className="h-4 w-4" />
-                        <span>Cloudflare R2 (10 GB)</span>
+                        <span>Backblaze B2 (10 GB)</span>
                       </button>
                     </div>
                   </div>
@@ -1072,7 +1048,7 @@ export default function StoragePoolTab({
                       required
                       value={editing.name}
                       onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                      placeholder="e.g. Cloudflare R2 Utama"
+                      placeholder="e.g. Backblaze B2 Utama"
                       className="h-[36px] rounded-xl border border-[#4A2E1B]/18 bg-white px-3 text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                     />
                   </div>
@@ -1087,7 +1063,9 @@ export default function StoragePoolTab({
                       disabled={Boolean(editing.useEnvCredentials)}
                       value={editing.bucket}
                       onChange={(e) => setEditing({ ...editing, bucket: e.target.value })}
-                      placeholder="orihour-media"
+                      placeholder={
+                        editing.provider === 'b2' ? 'orihour-media-01' : 'orihour-media'
+                      }
                       className="h-[36px] rounded-xl border border-[#4A2E1B]/18 bg-white px-3 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B] disabled:bg-[#EFE7DA]"
                     />
                   </div>
@@ -1097,8 +1075,8 @@ export default function StoragePoolTab({
                   <>
                     <div className="flex flex-col gap-1">
                       <label className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
-                        {editing.provider === 'r2'
-                          ? 'Cloudflare Account ID atau R2 S3 Endpoint *'
+                        {editing.provider === 'b2'
+                          ? 'S3 Endpoint Backblaze B2 *'
                           : 'Project URL Supabase *'}
                       </label>
                       <input
@@ -1109,35 +1087,39 @@ export default function StoragePoolTab({
                           setEditing({ ...editing, endpointUrl: e.target.value })
                         }
                         placeholder={
-                          editing.provider === 'r2'
-                            ? 'https://<ACCOUNT_ID>.r2.cloudflarestorage.com atau cukup Account ID'
+                          editing.provider === 'b2'
+                            ? 's3.us-west-004.backblazeb2.com'
                             : 'https://xxxxxxxxxxxx.supabase.co'
                         }
                         className="h-[36px] rounded-xl border border-[#4A2E1B]/18 bg-white px-3 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                       />
+                      {editing.provider === 'b2' && (
+                        <p className="text-[10.5px] text-[#7A624E]">
+                          Salin dari kolom <strong>Endpoint</strong> di kartu bucket Backblaze B2 (region terdeteksi otomatis).
+                        </p>
+                      )}
                     </div>
 
-                    {editing.provider === 'r2' && (
+                    {editing.provider === 'b2' && (
                       <>
                         <div className="flex flex-col gap-1">
                           <label className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
-                            Public Domain URL Bucket R2 *
+                            Public URL Kustom (Opsional)
                           </label>
                           <input
                             type="url"
-                            required
                             value={editing.publicBaseUrl}
                             onChange={(e) =>
                               setEditing({ ...editing, publicBaseUrl: e.target.value })
                             }
-                            placeholder="https://pub-xxxxxxxxxxxxxxxx.r2.dev"
+                            placeholder="Kosongkan untuk otomatis (https://s3.<region>.backblazeb2.com/<bucket>)"
                             className="h-[36px] rounded-xl border border-[#4A2E1B]/18 bg-white px-3 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                           />
                         </div>
 
                         <div className="flex flex-col gap-1">
                           <label className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
-                            R2 Access Key ID *
+                            Backblaze Key ID (keyID) *
                           </label>
                           <input
                             type="text"
@@ -1146,7 +1128,7 @@ export default function StoragePoolTab({
                             onChange={(e) =>
                               setEditing({ ...editing, accessKeyId: e.target.value })
                             }
-                            placeholder="Tempel Access Key ID dari R2 API Token..."
+                            placeholder="Tempel keyID dari Application Key Backblaze..."
                             className="h-[36px] rounded-xl border border-[#4A2E1B]/18 bg-white px-3 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"
                           />
                         </div>
@@ -1155,8 +1137,8 @@ export default function StoragePoolTab({
 
                     <div className="flex flex-col gap-1">
                       <label className="font-mono text-[10px] font-semibold tracking-wider text-[#5C4432] uppercase">
-                        {editing.provider === 'r2'
-                          ? 'R2 Secret Access Key'
+                        {editing.provider === 'b2'
+                          ? 'Backblaze Application Key (applicationKey)'
                           : 'Supabase Service Role Key'}{' '}
                         {editing.id ? '(Kosongkan Jika Tidak Diubah)' : '*'}
                       </label>
@@ -1171,8 +1153,8 @@ export default function StoragePoolTab({
                           placeholder={
                             editing.id
                               ? 'Biarkan kosong untuk tetap memakai kunci lama...'
-                              : editing.provider === 'r2'
-                              ? 'Tempel Secret Access Key R2...'
+                              : editing.provider === 'b2'
+                              ? 'Tempel applicationKey Backblaze B2...'
                               : 'eyJhbGciOiJIUzI1NiIsInR5cCI6...'
                           }
                           className="h-[36px] w-full rounded-xl border border-[#4A2E1B]/18 bg-white pr-10 pl-3 font-mono text-xs text-[#241A13] outline-none focus:border-[#4A2E1B]"

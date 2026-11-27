@@ -45,7 +45,7 @@ async function runKeepAlive(req: NextRequest) {
       .select('id')
       .limit(1);
 
-    // 2. Ping every enabled storage account (Supabase Storage & Cloudflare R2)
+    // 2. Ping every enabled storage account (Supabase Storage & Backblaze B2)
     const results: Array<{
       id: string;
       name: string;
