@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import {
   buildStorageOverview,
+  cleanupOrphanedStorageFiles,
   encryptSecret,
   ensurePrimaryStorageBootstrapped,
   getPrimaryAdminDb,
@@ -315,6 +316,21 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({
         ...buildStorageOverview(fresh.accounts, fresh.settings),
         scanErrors: errors,
+      });
+    }
+
+    if (action === 'cleanup_orphans') {
+      const id = cleanStr(body.id, 80);
+      const dryRun = Boolean(body.dryRun);
+      const cleanup = await cleanupOrphanedStorageFiles(db, {
+        accountId: id || undefined,
+        dryRun,
+      });
+
+      const fresh = await ensurePrimaryStorageBootstrapped(db);
+      return NextResponse.json({
+        ...buildStorageOverview(fresh.accounts, fresh.settings),
+        cleanup,
       });
     }
 

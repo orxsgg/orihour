@@ -25,6 +25,7 @@ import {
   HelpCircle,
   ChevronDown,
   ChevronUp,
+  Sparkles,
 } from 'lucide-react';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
 
@@ -72,6 +73,26 @@ export interface StoragePoolOverview {
   hasFull: boolean;
   warningMessage: string | null;
   warningSeverity: 'none' | 'warning' | 'full';
+}
+
+interface OrphanAccountSummary {
+  accountId: string;
+  accountName: string;
+  provider: StorageProvider;
+  orphanCount: number;
+  orphanBytes: number;
+  deletedCount: number;
+  deletedBytes: number;
+  error?: string;
+}
+
+interface OrphanCleanupResult {
+  dryRun: boolean;
+  totalOrphanCount: number;
+  totalOrphanBytes: number;
+  totalDeletedCount: number;
+  totalDeletedBytes: number;
+  byAccount: OrphanAccountSummary[];
 }
 
 interface StoragePoolTabProps {
@@ -290,6 +311,111 @@ export default function StoragePoolTab({
       }
     } catch (err) {
       flashError(err instanceof Error ? err.message : 'Gagal memindai kapasitas.');
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleInspectOrphans = async (account?: PublicStorageAccount) => {
+    const actionKey = account ? `clean-${account.id}` : 'clean-all';
+    setBusyAction(actionKey);
+    try {
+      const res = await fetch('/api/admin/storage', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'cleanup_orphans',
+          id: account?.id || '',
+          dryRun: true,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Gagal memindai file tak terpakai.');
+
+      const cleanup = data.cleanup as OrphanCleanupResult | undefined;
+      if (!cleanup) throw new Error('Respon pemindaian tidak valid.');
+
+      const accountErrors = cleanup.byAccount
+        .filter((a) => Boolean(a.error))
+        .map((a) => `${a.accountName}: ${a.error}`);
+
+      if (cleanup.totalOrphanCount === 0) {
+        if (accountErrors.length > 0) {
+          flashError(`Pemindaian terkendala: ${accountErrors.join(' | ')}`);
+        } else {
+          flashSuccess(
+            account
+              ? `Bucket "${account.name}" sudah bersih! Semua file di dalamnya masih aktif dipakai.`
+              : 'Semua bucket penyimpanan sudah bersih! Tidak ada file tak terpakai yang ditemukan.'
+          );
+        }
+        return;
+      }
+
+      const breakdown = cleanup.byAccount
+        .filter((a) => a.orphanCount > 0)
+        .map(
+          (a) =>
+            `${a.accountName}: ${a.orphanCount} file (${formatBytes(a.orphanBytes)})`
+        )
+        .join(' · ');
+
+      setConfirmState({
+        title: `Bersihkan ${cleanup.totalOrphanCount} File Tak Terpakai?`,
+        description: `Ditemukan ${cleanup.totalOrphanCount} file sisa (${formatBytes(
+          cleanup.totalOrphanBytes
+        )}) yang sudah tidak terhubung ke vinyl aktif, poster dinding, maupun foto profil [${breakdown}]. File tersebut akan dihapus permanen dari bucket (termasuk riwayat versi di Backblaze B2) dan ruang penyimpanan langsung kembali longgar.`,
+        confirmLabel: `Hapus Permanen (${cleanup.totalOrphanCount} File)`,
+        onConfirm: async () => {
+          setBusyAction(actionKey);
+          try {
+            const execRes = await fetch('/api/admin/storage', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'cleanup_orphans',
+                id: account?.id || '',
+                dryRun: false,
+              }),
+            });
+            const execData = await execRes.json().catch(() => ({}));
+            if (!execRes.ok) {
+              throw new Error(execData.error || 'Gagal menghapus file tak terpakai.');
+            }
+            onOverviewUpdated(execData as StoragePoolOverview);
+
+            const result = execData.cleanup as OrphanCleanupResult | undefined;
+            const execErrors = (result?.byAccount || [])
+              .filter((a) => Boolean(a.error))
+              .map((a) => `${a.accountName}: ${a.error}`);
+
+            if (execErrors.length > 0) {
+              flashError(
+                `Berhasil menghapus ${result?.totalDeletedCount ?? 0} file (${formatBytes(
+                  result?.totalDeletedBytes ?? 0
+                )}), namun ada kendala: ${execErrors.join(' | ')}`
+              );
+            } else {
+              flashSuccess(
+                `Selesai! ${result?.totalDeletedCount ?? 0} file tak terpakai (${formatBytes(
+                  result?.totalDeletedBytes ?? 0
+                )}) telah dihapus permanen dan kapasitas penyimpanan diperbarui.`
+              );
+            }
+          } catch (err) {
+            flashError(
+              err instanceof Error ? err.message : 'Gagal membersihkan file tak terpakai.'
+            );
+          } finally {
+            setBusyAction(null);
+            setConfirmState(null);
+          }
+        },
+      });
+    } catch (err) {
+      flashError(
+        err instanceof Error ? err.message : 'Gagal memindai file tak terpakai.'
+      );
     } finally {
       setBusyAction(null);
     }
@@ -544,7 +670,7 @@ export default function StoragePoolTab({
               Multi-Storage Pool (Supabase &amp; Backblaze B2)
             </h2>
             <p className="mt-0.5 text-xs text-[#655040]">
-              Database utama tetap satu, sedangkan file audio MP3 dan cover dibagi otomatis ke akun penyimpanan yang masih longgar.
+              Database utama tetap satu, sedangkan file audio MP3 dan cover dibagi otomatis dan ikut terhapus permanen saat koleksi dihapus.
             </p>
           </div>
 
@@ -634,7 +760,7 @@ export default function StoragePoolTab({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              disabled={busyAction === 'scan-all' || loading}
+              disabled={busyAction !== null || loading}
               onClick={() => void handleScanUsage()}
               className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-white px-3 py-1.5 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3] disabled:opacity-50"
             >
@@ -648,7 +774,24 @@ export default function StoragePoolTab({
 
             <button
               type="button"
-              disabled={busyAction === 'keep-alive'}
+              disabled={busyAction !== null || loading}
+              onClick={() => void handleInspectOrphans()}
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#6E1D2C]/28 bg-[#6E1D2C]/10 px-3 py-1.5 text-xs font-semibold text-[#571622] transition hover:bg-[#6E1D2C] hover:text-[#FAF5EC] disabled:opacity-50"
+              title="Pindai dan hapus permanen file sisa yang sudah tidak terpakai oleh vinyl, poster, maupun profil"
+            >
+              <Sparkles
+                className={`h-3.5 w-3.5 ${busyAction === 'clean-all' ? 'animate-pulse' : ''}`}
+              />
+              <span>
+                {busyAction === 'clean-all'
+                  ? 'Memeriksa File Sisa...'
+                  : 'Bersihkan File Tak Terpakai'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              disabled={busyAction !== null}
               onClick={() => void handleRunKeepAlive()}
               className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-[#4A2E1B]/20 bg-[#FFF6E6] px-3 py-1.5 text-xs font-semibold text-[#4A2E1B] transition hover:bg-[#F2E2C4] disabled:opacity-50"
             >
@@ -692,7 +835,7 @@ export default function StoragePoolTab({
                   Buka menu <strong>Buckets → Create a Bucket</strong>. Isi nama unik (misal <code>orihour-media-01</code>), pilih <strong>Files in Bucket are: Private</strong> (100% gratis), lalu klik <strong>Create a Bucket</strong>. Salin <strong>Endpoint</strong> yang tampil (contoh: <code>s3.us-west-004.backblazeb2.com</code>).
                 </li>
                 <li>
-                  Di kartu bucket tersebut, klik <strong>CORS Rules</strong> → pilih <strong>Share everything in this bucket with every origin</strong> → centang <strong>S3 Compatible API</strong> → klik <strong>Update CORS Rules</strong>.
+                  Pasang Custom CORS Rules yang mengizinkan <code>s3_put</code>, <code>s3_get</code>, dan <code>s3_head</code> pada bucket tersebut.
                 </li>
                 <li>
                   Buka menu kiri <strong>Application Keys → Add a New Application Key</strong>: pilih bucket kamu, set <strong>Type of Access: Read and Write</strong>, lalu klik <strong>Create New Key</strong>.
@@ -893,7 +1036,7 @@ export default function StoragePoolTab({
                   {!acc.isActive && (
                     <button
                       type="button"
-                      disabled={busyAction === `active-${acc.id}`}
+                      disabled={busyAction !== null}
                       onClick={() => void handleSetActive(acc)}
                       className="inline-flex cursor-pointer items-center gap-1 rounded-lg bg-[#4A2E1B] px-2.5 py-1.5 text-[11px] font-semibold text-[#FAF5EC] transition hover:bg-[#3A2213] disabled:opacity-50"
                     >
@@ -904,7 +1047,7 @@ export default function StoragePoolTab({
 
                   <button
                     type="button"
-                    disabled={busyAction === `scan-${acc.id}`}
+                    disabled={busyAction !== null}
                     onClick={() => void handleScanUsage(acc.id)}
                     className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#4A2E1B]/20 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[#4A2E1B] transition hover:bg-[#EFE4D3] disabled:opacity-50"
                   >
@@ -918,7 +1061,22 @@ export default function StoragePoolTab({
 
                   <button
                     type="button"
-                    disabled={busyAction === `toggle-${acc.id}`}
+                    disabled={busyAction !== null}
+                    onClick={() => void handleInspectOrphans(acc)}
+                    className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#6E1D2C]/25 bg-[#6E1D2C]/8 px-2.5 py-1.5 text-[11px] font-semibold text-[#571622] transition hover:bg-[#6E1D2C] hover:text-[#FAF5EC] disabled:opacity-50"
+                    title={`Bersihkan file sisa tak terpakai khusus di ${acc.name}`}
+                  >
+                    <Sparkles
+                      className={`h-3 w-3 ${
+                        busyAction === `clean-${acc.id}` ? 'animate-pulse' : ''
+                      }`}
+                    />
+                    <span>{busyAction === `clean-${acc.id}` ? '...' : 'Bersihkan'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={busyAction !== null}
                     onClick={() => void handleToggleEnabled(acc)}
                     className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#4A2E1B]/18 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[#5C4432] transition hover:bg-[#EFE4D3] disabled:opacity-50"
                     title={acc.isEnabled ? 'Nonaktifkan sementara' : 'Aktifkan akun'}
@@ -941,7 +1099,7 @@ export default function StoragePoolTab({
                   {!acc.useEnvCredentials && (
                     <button
                       type="button"
-                      disabled={busyAction === `del-${acc.id}`}
+                      disabled={busyAction !== null}
                       onClick={() => requestDeleteAccount(acc)}
                       className="cursor-pointer rounded-lg border border-[#4A2E1B]/14 bg-white p-1.5 text-[#8A7360] transition hover:border-[#6E1D2C]/40 hover:bg-[#6E1D2C]/10 hover:text-[#6E1D2C] disabled:opacity-45"
                       title="Lepas akun dari daftar"

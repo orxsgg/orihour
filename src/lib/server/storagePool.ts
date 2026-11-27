@@ -82,6 +82,26 @@ export interface StoragePoolOverview {
   warningSeverity: 'none' | 'warning' | 'full';
 }
 
+export interface OrphanAccountSummary {
+  accountId: string;
+  accountName: string;
+  provider: StorageProvider;
+  orphanCount: number;
+  orphanBytes: number;
+  deletedCount: number;
+  deletedBytes: number;
+  error?: string;
+}
+
+export interface OrphanCleanupResult {
+  dryRun: boolean;
+  totalOrphanCount: number;
+  totalOrphanBytes: number;
+  totalDeletedCount: number;
+  totalDeletedBytes: number;
+  byAccount: OrphanAccountSummary[];
+}
+
 export function getPrimaryAdminDb(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -242,9 +262,6 @@ export function resolveAccountCredentials(row: StorageAccountRow) {
   const endpointUrl = (row.endpoint_url || '').replace(/\/+$/, '');
   const bucket = (row.bucket || 'orihour-media').trim();
   const explicitPublic = (row.public_base_url || '').replace(/\/+$/, '');
-
-  // Untuk Backblaze B2: jika public_base_url kosong, biarkan kosong
-  // agar otomatis memakai Private Signed Proxy (/api/media/b2/<id>/...)
   const publicBaseUrl = row.provider === 'b2' ? explicitPublic : endpointUrl;
 
   return {
@@ -477,6 +494,10 @@ function encodeS3Path(pathStr: string): string {
     .join('/');
 }
 
+function asciiCompare(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function getSigV4Timestamps(now = new Date()) {
   const iso = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
   return {
@@ -524,8 +545,9 @@ function createB2PresignedUrl(params: {
   ];
 
   const canonicalQuery = queryPairs
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([k, v]) => `${encodeRfc3986(k)}=${encodeRfc3986(v)}`)
+    .map(([k, v]): [string, string] => [encodeRfc3986(k), encodeRfc3986(v)])
+    .sort((a, b) => asciiCompare(a[0], b[0]) || asciiCompare(a[1], b[1]))
+    .map(([k, v]) => `${k}=${v}`)
     .join('&');
 
   const canonicalHeaders = `host:${host}\n`;
@@ -585,10 +607,12 @@ export function createB2PresignedReadUrl(params: {
   });
 }
 
-async function signedB2GetRequest(params: {
+async function signedB2Request(params: {
+  method: 'GET' | 'DELETE';
   endpointUrl: string;
   bucket: string;
-  query: Record<string, string>;
+  objectKey?: string;
+  query?: Record<string, string | undefined>;
   accessKeyId: string;
   secretAccessKey: string;
 }): Promise<Response> {
@@ -600,12 +624,15 @@ async function signedB2GetRequest(params: {
   const payloadHash = sha256Hex('');
 
   const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
-  const canonicalUri = `/${encodeRfc3986(params.bucket)}`;
+  const canonicalUri = params.objectKey
+    ? `/${encodeRfc3986(params.bucket)}/${encodeS3Path(params.objectKey)}`
+    : `/${encodeRfc3986(params.bucket)}`;
 
-  const canonicalQuery = Object.entries(params.query)
-    .filter(([, v]) => v !== undefined && v !== '')
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${encodeRfc3986(k)}=${encodeRfc3986(v)}`)
+  const canonicalQuery = Object.entries(params.query || {})
+    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .map(([k, v]): [string, string] => [encodeRfc3986(k), encodeRfc3986(v)])
+    .sort((a, b) => asciiCompare(a[0], b[0]) || asciiCompare(a[1], b[1]))
+    .map(([k, v]) => `${k}=${v}`)
     .join('&');
 
   const canonicalHeaders =
@@ -615,7 +642,7 @@ async function signedB2GetRequest(params: {
   const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
 
   const canonicalRequest = [
-    'GET',
+    params.method,
     canonicalUri,
     canonicalQuery,
     canonicalHeaders,
@@ -640,14 +667,14 @@ async function signedB2GetRequest(params: {
   const fullUrl = `${parsed.origin}${canonicalUri}${canonicalQuery ? `?${canonicalQuery}` : ''}`;
 
   return fetch(fullUrl, {
-    method: 'GET',
+    method: params.method,
     headers: {
       'x-amz-content-sha256': payloadHash,
       'x-amz-date': amzDate,
       Authorization: authorization,
     },
     cache: 'no-store',
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(15000),
   });
 }
 
@@ -660,20 +687,144 @@ function decodeXmlEntities(str: string): string {
     .replace(/&apos;/g, "'");
 }
 
+interface B2ObjectVersion {
+  key: string;
+  versionId: string;
+  size: number;
+  isDeleteMarker: boolean;
+}
+
+async function listB2ObjectVersions(
+  creds: {
+    endpointUrl: string;
+    bucket: string;
+    accessKeyId: string;
+    secret: string;
+  },
+  prefix?: string
+): Promise<B2ObjectVersion[]> {
+  const results: B2ObjectVersion[] = [];
+  let keyMarker = '';
+  let versionIdMarker = '';
+  let pages = 0;
+
+  while (pages < 30) {
+    pages += 1;
+    const query: Record<string, string | undefined> = {
+      versions: '',
+      'max-keys': '1000',
+    };
+    if (prefix) query.prefix = prefix;
+    if (keyMarker) query['key-marker'] = keyMarker;
+    if (versionIdMarker) query['version-id-marker'] = versionIdMarker;
+
+    const res = await signedB2Request({
+      method: 'GET',
+      endpointUrl: creds.endpointUrl,
+      bucket: creds.bucket,
+      query,
+      accessKeyId: creds.accessKeyId,
+      secretAccessKey: creds.secret,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Backblaze B2 ListVersions error (${res.status}): ${text.slice(0, 180)}`);
+    }
+
+    const xml = await res.text();
+
+    const versionBlocks = xml.matchAll(/<Version>([\s\S]*?)<\/Version>/g);
+    for (const m of versionBlocks) {
+      const block = m[1];
+      const keyM = block.match(/<Key>([\s\S]*?)<\/Key>/);
+      const vidM = block.match(/<VersionId>([\s\S]*?)<\/VersionId>/);
+      const sizeM = block.match(/<Size>(\d+)<\/Size>/);
+      if (keyM?.[1]) {
+        results.push({
+          key: decodeXmlEntities(keyM[1]),
+          versionId: vidM?.[1] ? decodeXmlEntities(vidM[1]) : '',
+          size: Number(sizeM?.[1] || 0) || 0,
+          isDeleteMarker: false,
+        });
+      }
+    }
+
+    const markerBlocks = xml.matchAll(/<DeleteMarker>([\s\S]*?)<\/DeleteMarker>/g);
+    for (const m of markerBlocks) {
+      const block = m[1];
+      const keyM = block.match(/<Key>([\s\S]*?)<\/Key>/);
+      const vidM = block.match(/<VersionId>([\s\S]*?)<\/VersionId>/);
+      if (keyM?.[1]) {
+        results.push({
+          key: decodeXmlEntities(keyM[1]),
+          versionId: vidM?.[1] ? decodeXmlEntities(vidM[1]) : '',
+          size: 0,
+          isDeleteMarker: true,
+        });
+      }
+    }
+
+    const isTruncated = /<IsTruncated>true<\/IsTruncated>/i.test(xml);
+    const nextKeyM = xml.match(/<NextKeyMarker>([\s\S]*?)<\/NextKeyMarker>/);
+    const nextVidM = xml.match(/<NextVersionIdMarker>([\s\S]*?)<\/NextVersionIdMarker>/);
+    if (isTruncated && nextKeyM?.[1]) {
+      keyMarker = decodeXmlEntities(nextKeyM[1]);
+      versionIdMarker = nextVidM?.[1] ? decodeXmlEntities(nextVidM[1]) : '';
+    } else {
+      break;
+    }
+  }
+
+  return results;
+}
+
+async function deleteB2ObjectVersion(
+  creds: {
+    endpointUrl: string;
+    bucket: string;
+    accessKeyId: string;
+    secret: string;
+  },
+  key: string,
+  versionId?: string
+): Promise<boolean> {
+  const query: Record<string, string | undefined> = {};
+  if (versionId && versionId !== 'null') {
+    query.versionId = versionId;
+  }
+
+  const res = await signedB2Request({
+    method: 'DELETE',
+    endpointUrl: creds.endpointUrl,
+    bucket: creds.bucket,
+    objectKey: key,
+    query,
+    accessKeyId: creds.accessKeyId,
+    secretAccessKey: creds.secret,
+  });
+
+  return res.ok || res.status === 404;
+}
+
 /* ============================================================
    Scan Real Storage Usage & Keep-Alive Ping (Supabase & B2)
    ============================================================ */
 
-async function scanSupabaseBucketRecursive(
+interface StoredObjectEntry {
+  key: string;
+  size: number;
+}
+
+async function listSupabaseObjectsRecursive(
   client: SupabaseClient,
   bucket: string,
   prefix = '',
   depth = 0
-): Promise<{ totalBytes: number; fileCount: number }> {
-  if (depth > 4) return { totalBytes: 0, fileCount: 0 };
+): Promise<StoredObjectEntry[]> {
+  if (depth > 4) return [];
 
-  let totalBytes = 0;
-  let fileCount = 0;
+  const out: StoredObjectEntry[] = [];
   let offset = 0;
   const limit = 500;
 
@@ -691,15 +842,13 @@ async function scanSupabaseBucketRecursive(
     const items = data || [];
     for (const item of items) {
       if (!item.name || item.name === '.emptyFolderPlaceholder') continue;
+      const fullKey = prefix ? `${prefix}/${item.name}` : item.name;
       if (item.id === null) {
-        const subPrefix = prefix ? `${prefix}/${item.name}` : item.name;
-        const sub = await scanSupabaseBucketRecursive(client, bucket, subPrefix, depth + 1);
-        totalBytes += sub.totalBytes;
-        fileCount += sub.fileCount;
+        const sub = await listSupabaseObjectsRecursive(client, bucket, fullKey, depth + 1);
+        out.push(...sub);
       } else {
         const size = Number((item.metadata as { size?: number } | null)?.size || 0);
-        totalBytes += Number.isFinite(size) ? size : 0;
-        fileCount += 1;
+        out.push({ key: fullKey, size: Number.isFinite(size) ? size : 0 });
       }
     }
 
@@ -708,7 +857,7 @@ async function scanSupabaseBucketRecursive(
     if (offset > 5000) break;
   }
 
-  return { totalBytes, fileCount };
+  return out;
 }
 
 export async function scanAccountUsage(
@@ -723,58 +872,23 @@ export async function scanAccountUsage(
     const sb = createClient(creds.endpointUrl, creds.secret, {
       auth: { persistSession: false },
     });
-    const res = await scanSupabaseBucketRecursive(sb, creds.bucket);
-    return { usedBytes: res.totalBytes, fileCount: res.fileCount };
+    const objects = await listSupabaseObjectsRecursive(sb, creds.bucket);
+    const usedBytes = objects.reduce((sum, obj) => sum + obj.size, 0);
+    return { usedBytes, fileCount: objects.length };
   }
 
-  // Backblaze B2 ListObjectsV2 pagination
+  // Backblaze B2: hitung seluruh versi fisik tersimpan agar akurat dengan kuota B2
   if (!creds.endpointUrl || !creds.accessKeyId || !creds.secret) {
     throw new Error(`Kredensial Backblaze B2 untuk "${row.name}" belum lengkap.`);
   }
 
+  const versions = await listB2ObjectVersions(creds);
   let totalBytes = 0;
   let fileCount = 0;
-  let continuationToken = '';
-  let pages = 0;
-
-  while (pages < 25) {
-    pages += 1;
-    const query: Record<string, string> = {
-      'list-type': '2',
-      'max-keys': '1000',
-    };
-    if (continuationToken) {
-      query['continuation-token'] = continuationToken;
-    }
-
-    const res = await signedB2GetRequest({
-      endpointUrl: creds.endpointUrl,
-      bucket: creds.bucket,
-      query,
-      accessKeyId: creds.accessKeyId,
-      secretAccessKey: creds.secret,
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Backblaze B2 API error (${res.status}): ${text.slice(0, 180)}`);
-    }
-
-    const xml = await res.text();
-    const sizeMatches = xml.matchAll(/<Size>(\d+)<\/Size>/g);
-    for (const m of sizeMatches) {
-      totalBytes += Number(m[1]) || 0;
+  for (const v of versions) {
+    if (!v.isDeleteMarker) {
+      totalBytes += v.size;
       fileCount += 1;
-    }
-
-    const isTruncated = /<IsTruncated>true<\/IsTruncated>/i.test(xml);
-    const nextTokenMatch = xml.match(
-      /<NextContinuationToken>([^<]+)<\/NextContinuationToken>/
-    );
-    if (isTruncated && nextTokenMatch?.[1]) {
-      continuationToken = decodeXmlEntities(nextTokenMatch[1]);
-    } else {
-      break;
     }
   }
 
@@ -801,11 +915,11 @@ export async function pingStorageAccount(
       return { ok: true, statusText: 'Online (Active)' };
     }
 
-    // Backblaze B2 lightweight ping (max-keys=1)
     if (!creds.endpointUrl || !creds.accessKeyId || !creds.secret) {
       return { ok: false, statusText: 'Kredensial B2 kosong' };
     }
-    const res = await signedB2GetRequest({
+    const res = await signedB2Request({
+      method: 'GET',
       endpointUrl: creds.endpointUrl,
       bucket: creds.bucket,
       query: { 'list-type': '2', 'max-keys': '1' },
@@ -822,6 +936,384 @@ export async function pingStorageAccount(
       statusText: err instanceof Error ? err.message.slice(0, 80) : 'Timeout/Error',
     };
   }
+}
+
+/* ============================================================
+   URL -> Storage Account Resolver, Auto-Delete & Orphan Cleaner
+   ============================================================ */
+
+function safeDecodeSegment(seg: string): string {
+  try {
+    return decodeURIComponent(seg);
+  } catch {
+    return seg;
+  }
+}
+
+function decodePathSegments(rawPath: string): string {
+  return rawPath
+    .replace(/^\/+/, '')
+    .split('/')
+    .map(safeDecodeSegment)
+    .join('/')
+    .replace(/^\/+/, '');
+}
+
+export function extractStorageRefFromUrl(
+  rawUrl: string,
+  accounts: StorageAccountRow[]
+): { accountId: string; objectKey: string } | null {
+  const trimmed = (rawUrl || '').trim();
+  if (!trimmed) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed, 'https://orihour.vercel.app');
+  } catch {
+    return null;
+  }
+
+  // 1. Backblaze B2 Private Signed Proxy: /api/media/b2/<accountId>/<objectKey>
+  const b2ProxyMatch = parsed.pathname.match(/^\/api\/media\/b2\/([^/]+)\/(.+)$/);
+  if (b2ProxyMatch?.[1] && b2ProxyMatch?.[2]) {
+    const accountId = safeDecodeSegment(b2ProxyMatch[1]);
+    const matchedAcc = accounts.find((a) => a.id === accountId && a.provider === 'b2');
+    if (matchedAcc) {
+      const objectKey = decodePathSegments(b2ProxyMatch[2]);
+      if (objectKey) return { accountId: matchedAcc.id, objectKey };
+    }
+  }
+
+  const parsedOrigin = parsed.origin.toLowerCase();
+
+  // 2. Supabase Public/Signed URL atau Backblaze B2 Public URL
+  for (const acc of accounts) {
+    const creds = resolveAccountCredentials(acc);
+    if (!creds.bucket) continue;
+
+    if (acc.provider === 'supabase' && creds.endpointUrl) {
+      try {
+        const epOrigin = new URL(creds.endpointUrl).origin.toLowerCase();
+        if (parsedOrigin !== epOrigin) continue;
+
+        const prefixes = [
+          `/storage/v1/object/public/${creds.bucket}/`,
+          `/storage/v1/object/sign/${creds.bucket}/`,
+        ];
+        for (const prefix of prefixes) {
+          if (parsed.pathname.startsWith(prefix)) {
+            const objectKey = decodePathSegments(parsed.pathname.slice(prefix.length));
+            if (objectKey) return { accountId: acc.id, objectKey };
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    if (acc.provider === 'b2') {
+      const baseCandidates: string[] = [];
+      if (creds.publicBaseUrl) baseCandidates.push(creds.publicBaseUrl);
+      if (creds.endpointUrl && creds.bucket) {
+        baseCandidates.push(`${creds.endpointUrl}/${creds.bucket}`);
+      }
+
+      for (const base of baseCandidates) {
+        try {
+          const baseUrl = new URL(base);
+          const basePrefix = `${baseUrl.pathname.replace(/\/+$/, '')}/`;
+          if (
+            parsedOrigin === baseUrl.origin.toLowerCase() &&
+            parsed.pathname.startsWith(basePrefix)
+          ) {
+            const objectKey = decodePathSegments(parsed.pathname.slice(basePrefix.length));
+            if (objectKey) return { accountId: acc.id, objectKey };
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+export async function collectReferencedMediaUrls(db: SupabaseClient): Promise<Set<string>> {
+  const [vinylsRes, postersRes, settingsRes] = await Promise.all([
+    db.from('vinyl_records').select('cover_url, audio_url, tracks'),
+    db.from('wall_posters').select('image_url'),
+    db.from('room_settings').select('owner_profile').eq('id', 1).maybeSingle(),
+  ]);
+
+  if (vinylsRes.error) {
+    throw new Error(`Gagal membaca referensi vinyl_records: ${vinylsRes.error.message}`);
+  }
+  if (postersRes.error) {
+    throw new Error(`Gagal membaca referensi wall_posters: ${postersRes.error.message}`);
+  }
+  if (settingsRes.error) {
+    throw new Error(`Gagal membaca referensi room_settings: ${settingsRes.error.message}`);
+  }
+
+  const urls = new Set<string>();
+  const addUrl = (val: unknown) => {
+    if (typeof val === 'string' && val.trim()) {
+      urls.add(val.trim());
+    }
+  };
+
+  for (const row of (vinylsRes.data || []) as Array<{
+    cover_url?: string | null;
+    audio_url?: string | null;
+    tracks?: unknown;
+  }>) {
+    addUrl(row.cover_url);
+    addUrl(row.audio_url);
+    if (Array.isArray(row.tracks)) {
+      for (const trk of row.tracks as Array<Record<string, unknown>>) {
+        if (trk && typeof trk === 'object') {
+          addUrl(trk.audioUrl);
+          addUrl(trk.audio_url);
+        }
+      }
+    }
+  }
+
+  for (const row of (postersRes.data || []) as Array<{ image_url?: string | null }>) {
+    addUrl(row.image_url);
+  }
+
+  const ownerProfile = (
+    settingsRes.data as { owner_profile?: Record<string, unknown> | null } | null
+  )?.owner_profile;
+  if (ownerProfile && typeof ownerProfile === 'object') {
+    addUrl(ownerProfile.avatarUrl);
+    addUrl(ownerProfile.avatar_url);
+  }
+
+  return urls;
+}
+
+function buildReferencedKeyMap(
+  urls: Set<string>,
+  accounts: StorageAccountRow[]
+): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>();
+  for (const url of urls) {
+    const ref = extractStorageRefFromUrl(url, accounts);
+    if (!ref) continue;
+    let set = map.get(ref.accountId);
+    if (!set) {
+      set = new Set<string>();
+      map.set(ref.accountId, set);
+    }
+    set.add(ref.objectKey);
+  }
+  return map;
+}
+
+async function refreshAccountUsageInDb(db: SupabaseClient, acc: StorageAccountRow) {
+  try {
+    const scanned = await scanAccountUsage(acc);
+    const nowIso = new Date().toISOString();
+    await db
+      .from('storage_accounts')
+      .update({
+        used_bytes: scanned.usedBytes,
+        file_count: scanned.fileCount,
+        last_scanned_at: nowIso,
+        updated_at: nowIso,
+      })
+      .eq('id', acc.id);
+  } catch {
+    // Non-fatal; admin can re-scan manually anytime
+  }
+}
+
+export async function deleteMediaUrlsFromStoragePool(
+  db: SupabaseClient,
+  candidateUrls: string[]
+): Promise<{ deletedCount: number; errors: string[] }> {
+  const uniqueUrls = Array.from(
+    new Set(candidateUrls.map((u) => (u || '').trim()).filter(Boolean))
+  );
+  if (uniqueUrls.length === 0) {
+    return { deletedCount: 0, errors: [] };
+  }
+
+  const { accounts } = await ensurePrimaryStorageBootstrapped(db);
+  const activeUrls = await collectReferencedMediaUrls(db);
+  const activeKeysByAccount = buildReferencedKeyMap(activeUrls, accounts);
+
+  const keysToDeleteByAccount = new Map<string, Set<string>>();
+  for (const url of uniqueUrls) {
+    const ref = extractStorageRefFromUrl(url, accounts);
+    if (!ref) continue;
+    // Jangan pernah hapus file yang masih dipakai koleksi/poster/profil lain
+    if (activeKeysByAccount.get(ref.accountId)?.has(ref.objectKey)) {
+      continue;
+    }
+    let set = keysToDeleteByAccount.get(ref.accountId);
+    if (!set) {
+      set = new Set<string>();
+      keysToDeleteByAccount.set(ref.accountId, set);
+    }
+    set.add(ref.objectKey);
+  }
+
+  let deletedCount = 0;
+  const errors: string[] = [];
+
+  for (const [accountId, keySet] of keysToDeleteByAccount.entries()) {
+    const acc = accounts.find((a) => a.id === accountId);
+    if (!acc) continue;
+    const creds = resolveAccountCredentials(acc);
+    const keys = Array.from(keySet);
+    if (keys.length === 0) continue;
+
+    try {
+      if (acc.provider === 'supabase') {
+        if (!creds.endpointUrl || !creds.secret) continue;
+        const sb = createClient(creds.endpointUrl, creds.secret, {
+          auth: { persistSession: false },
+        });
+        for (let i = 0; i < keys.length; i += 100) {
+          const chunk = keys.slice(i, i + 100);
+          const { error } = await sb.storage.from(creds.bucket).remove(chunk);
+          if (error) {
+            errors.push(`${acc.name}: ${error.message}`);
+          } else {
+            deletedCount += chunk.length;
+          }
+        }
+      } else {
+        // Backblaze B2: hapus seluruh versionId & delete marker agar kuota langsung kembali
+        if (!creds.endpointUrl || !creds.accessKeyId || !creds.secret) continue;
+        for (const key of keys) {
+          const versions = await listB2ObjectVersions(creds, key);
+          const exactMatches = versions.filter((v) => v.key === key);
+          if (exactMatches.length === 0) {
+            await deleteB2ObjectVersion(creds, key);
+          } else {
+            for (const v of exactMatches) {
+              const ok = await deleteB2ObjectVersion(creds, v.key, v.versionId);
+              if (ok && !v.isDeleteMarker) deletedCount += 1;
+            }
+          }
+        }
+      }
+
+      await refreshAccountUsageInDb(db, acc);
+    } catch (err) {
+      errors.push(`${acc.name}: ${err instanceof Error ? err.message : 'Gagal hapus file'}`);
+    }
+  }
+
+  return { deletedCount, errors };
+}
+
+export async function cleanupOrphanedStorageFiles(
+  db: SupabaseClient,
+  options?: { accountId?: string; dryRun?: boolean }
+): Promise<OrphanCleanupResult> {
+  const dryRun = Boolean(options?.dryRun);
+  const { accounts } = await ensurePrimaryStorageBootstrapped(db);
+  const activeUrls = await collectReferencedMediaUrls(db);
+  const activeKeysByAccount = buildReferencedKeyMap(activeUrls, accounts);
+
+  const targets = options?.accountId
+    ? accounts.filter((a) => a.id === options.accountId)
+    : accounts.filter((a) => a.is_enabled);
+
+  const byAccount: OrphanAccountSummary[] = [];
+  let totalOrphanCount = 0;
+  let totalOrphanBytes = 0;
+  let totalDeletedCount = 0;
+  let totalDeletedBytes = 0;
+
+  for (const acc of targets) {
+    const creds = resolveAccountCredentials(acc);
+    const activeKeys = activeKeysByAccount.get(acc.id) || new Set<string>();
+    const summary: OrphanAccountSummary = {
+      accountId: acc.id,
+      accountName: acc.name,
+      provider: acc.provider,
+      orphanCount: 0,
+      orphanBytes: 0,
+      deletedCount: 0,
+      deletedBytes: 0,
+    };
+
+    try {
+      if (acc.provider === 'supabase') {
+        if (!creds.endpointUrl || !creds.secret) {
+          throw new Error('Kredensial Supabase belum lengkap.');
+        }
+        const sb = createClient(creds.endpointUrl, creds.secret, {
+          auth: { persistSession: false },
+        });
+        const objects = await listSupabaseObjectsRecursive(sb, creds.bucket);
+        const orphans = objects.filter((obj) => !activeKeys.has(obj.key));
+
+        summary.orphanCount = orphans.length;
+        summary.orphanBytes = orphans.reduce((sum, o) => sum + o.size, 0);
+
+        if (!dryRun && orphans.length > 0) {
+          for (let i = 0; i < orphans.length; i += 100) {
+            const chunk = orphans.slice(i, i + 100);
+            const { error } = await sb.storage
+              .from(creds.bucket)
+              .remove(chunk.map((o) => o.key));
+            if (error) {
+              throw new Error(error.message);
+            }
+            summary.deletedCount += chunk.length;
+            summary.deletedBytes += chunk.reduce((sum, o) => sum + o.size, 0);
+          }
+          await refreshAccountUsageInDb(db, acc);
+        }
+      } else {
+        if (!creds.endpointUrl || !creds.accessKeyId || !creds.secret) {
+          throw new Error('Kredensial Backblaze B2 belum lengkap.');
+        }
+        const versions = await listB2ObjectVersions(creds);
+        const orphanVersions = versions.filter((v) => !activeKeys.has(v.key));
+
+        const realOrphanFiles = orphanVersions.filter((v) => !v.isDeleteMarker);
+        summary.orphanCount = realOrphanFiles.length;
+        summary.orphanBytes = realOrphanFiles.reduce((sum, v) => sum + v.size, 0);
+
+        if (!dryRun && orphanVersions.length > 0) {
+          for (const v of orphanVersions) {
+            const ok = await deleteB2ObjectVersion(creds, v.key, v.versionId);
+            if (ok && !v.isDeleteMarker) {
+              summary.deletedCount += 1;
+              summary.deletedBytes += v.size;
+            }
+          }
+          await refreshAccountUsageInDb(db, acc);
+        }
+      }
+    } catch (err) {
+      summary.error = err instanceof Error ? err.message : 'Gagal memindai/membersihkan akun.';
+    }
+
+    totalOrphanCount += summary.orphanCount;
+    totalOrphanBytes += summary.orphanBytes;
+    totalDeletedCount += summary.deletedCount;
+    totalDeletedBytes += summary.deletedBytes;
+    byAccount.push(summary);
+  }
+
+  return {
+    dryRun,
+    totalOrphanCount,
+    totalOrphanBytes,
+    totalDeletedCount,
+    totalDeletedBytes,
+    byAccount,
+  };
 }
 
 /* ============================================================
@@ -942,7 +1434,6 @@ export async function generatePresignedUploadForAccount(params: {
     };
   }
 
-  // Backblaze B2 (Mendukung Bucket Private via Signed Proxy maupun Public URL Kustom)
   if (!creds.endpointUrl || !creds.accessKeyId || !creds.secret) {
     throw new Error(
       `Konfigurasi Backblaze B2 untuk "${params.account.name}" belum lengkap (butuh S3 Endpoint, keyID, dan applicationKey).`

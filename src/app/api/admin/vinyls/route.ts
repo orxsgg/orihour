@@ -5,6 +5,10 @@ import { createServerClient } from '@supabase/ssr';
 import { createClient } from '@supabase/supabase-js';
 import { formatGenres, parseGenres } from '@/lib/genreUtils';
 import {
+  deleteMediaUrlsFromStoragePool,
+  getPrimaryAdminDb,
+} from '@/lib/server/storagePool';
+import {
   mapVinylRow,
   sanitizeClipMode,
   sanitizeFadeSec,
@@ -34,6 +38,34 @@ function cleanOptionalUrl(val: unknown): string | null {
     return trimmed.slice(0, 1200);
   }
   return null;
+}
+
+function extractVinylRowMediaUrls(row: {
+  cover_url?: string | null;
+  audio_url?: string | null;
+  tracks?: unknown;
+} | null): string[] {
+  if (!row) return [];
+  const urls: string[] = [];
+  if (typeof row.cover_url === 'string' && row.cover_url.trim()) {
+    urls.push(row.cover_url.trim());
+  }
+  if (typeof row.audio_url === 'string' && row.audio_url.trim()) {
+    urls.push(row.audio_url.trim());
+  }
+  if (Array.isArray(row.tracks)) {
+    for (const trk of row.tracks as Array<Record<string, unknown>>) {
+      if (trk && typeof trk === 'object') {
+        if (typeof trk.audioUrl === 'string' && trk.audioUrl.trim()) {
+          urls.push(trk.audioUrl.trim());
+        }
+        if (typeof trk.audio_url === 'string' && trk.audio_url.trim()) {
+          urls.push(trk.audio_url.trim());
+        }
+      }
+    }
+  }
+  return urls;
 }
 
 function sanitizeTracks(raw: unknown): TrackItem[] {
@@ -365,6 +397,18 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Tidak ada perubahan untuk disimpan.' }, { status: 400 });
     }
 
+    // Simpan daftar media lama jika ada perubahan cover/audio/tracks
+    const mediaChanged = 'coverUrl' in body || 'audioUrl' in body || 'tracks' in body;
+    let previousMediaUrls: string[] = [];
+    if (mediaChanged) {
+      const { data: prevRow } = await supabase
+        .from('vinyl_records')
+        .select('cover_url, audio_url, tracks')
+        .eq('id', id)
+        .maybeSingle();
+      previousMediaUrls = extractVinylRowMediaUrls(prevRow);
+    }
+
     const { data, error } = await supabase
       .from('vinyl_records')
       .update(patch)
@@ -374,6 +418,20 @@ export async function PATCH(req: NextRequest) {
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    // Hapus file lama yang diganti/dilepas dari bucket penyimpanan
+    if (mediaChanged && previousMediaUrls.length > 0) {
+      const nextSet = new Set(extractVinylRowMediaUrls(data));
+      const removedUrls = previousMediaUrls.filter((u) => !nextSet.has(u));
+      if (removedUrls.length > 0) {
+        try {
+          const adminDb = getPrimaryAdminDb();
+          await deleteMediaUrlsFromStoragePool(adminDb, removedUrls);
+        } catch {
+          // Non-fatal; tetap dapat dibersihkan lewat Orphan Cleaner
+        }
+      }
     }
 
     return NextResponse.json({ vinyl: mapVinylRow(data) });
@@ -398,6 +456,15 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'ID vinyl tidak valid.' }, { status: 400 });
     }
 
+    // 1. Ambil seluruh URL cover & MP3 sebelum baris database dihapus
+    const { data: existingRow } = await supabase
+      .from('vinyl_records')
+      .select('cover_url, audio_url, tracks')
+      .eq('id', id)
+      .maybeSingle();
+
+    const mediaUrlsToDelete = extractVinylRowMediaUrls(existingRow);
+
     try {
       await supabase
         .from('room_settings')
@@ -407,12 +474,25 @@ export async function DELETE(req: NextRequest) {
       // Abaikan jika pengaturan turntable sudah kosong
     }
 
+    // 2. Hapus record vinyl dari database
     const { error } = await supabase.from('vinyl_records').delete().eq('id', id);
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true, id });
+    // 3. Hapus fisik file terkait dari Supabase Storage / Backblaze B2 & perbarui kuota
+    let deletedStorageFiles = 0;
+    if (mediaUrlsToDelete.length > 0) {
+      try {
+        const adminDb = getPrimaryAdminDb();
+        const cleanup = await deleteMediaUrlsFromStoragePool(adminDb, mediaUrlsToDelete);
+        deletedStorageFiles = cleanup.deletedCount;
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    return NextResponse.json({ ok: true, id, deletedStorageFiles });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Gagal menghapus vinyl.' },
