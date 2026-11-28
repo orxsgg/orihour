@@ -865,14 +865,9 @@ export default function OrihourHomePage() {
         </div>
       )}
 
+      {/* EntryGate & MinimalHud tidak diubah opacity-nya agar backdrop-blur kaca tidak pernah kedip/putus */}
       {!hasEntered ? (
-        <div
-          className={`fixed inset-0 z-20 ${lofiVisible ? 'pointer-events-none' : ''}`}
-          style={{
-            opacity: lofiVisible ? 0 : 1,
-            transition: `opacity 220ms ${SMOOTH_EASE}`,
-          }}
-        >
+        <div className={lofiVisible ? 'pointer-events-none' : ''}>
           <EntryGate
             visible={curtainFading}
             isNightHud={atmosphere.isNightHud}
@@ -888,13 +883,7 @@ export default function OrihourHomePage() {
         </div>
       ) : (
         <>
-          <div
-            className={lofiVisible ? 'pointer-events-none' : ''}
-            style={{
-              opacity: lofiVisible ? 0 : 1,
-              transition: `opacity 220ms ${SMOOTH_EASE}`,
-            }}
-          >
+          <div className={lofiVisible ? 'pointer-events-none' : ''}>
             <MinimalHud
               activeVinyl={activeVinyl}
               activeTrack={activeTrack}
@@ -1003,11 +992,11 @@ export default function OrihourHomePage() {
         </>
       )}
 
-      {/* Full-Bleed Lo-Fi Surface: Edge-to-edge dissolve (zero black borders, zero dark flash) + subtle 12px inner settle */}
+      {/* Full-Bleed Lo-Fi Surface (z-[45]): Melapisi langsung di atas EntryGate/HUD yang tetap solid */}
       {dataReady && (
         <div
           aria-hidden={!lofiVisible}
-          className={`fixed inset-0 z-40 overflow-hidden bg-[#F3ECE0] select-text ${
+          className={`fixed inset-0 z-[45] overflow-hidden bg-[#F3ECE0] select-text ${
             lofiVisible ? 'pointer-events-auto' : 'pointer-events-none'
           }`}
           style={{
