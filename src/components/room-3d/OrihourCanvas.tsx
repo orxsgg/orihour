@@ -61,8 +61,8 @@ const CAMERA_RIG: Record<
   ENTRY: { pos: [2.95, 2.68, 4.45], target: [-0.38, 1.92, -0.35] },
   ROOM: { pos: [0.0, 2.25, 3.85], target: [0.0, 2.08, 1.85] },
   DESK: { pos: [0.0, 2.34, 2.82], target: [0.0, 2.22, 1.15] },
-  TURNTABLE: { pos: [0.24, 2.15, 0.68], target: [0.16, 1.64, -0.34] },
-  CRATE: { pos: [-1.02, 2.22, 0.78], target: [-1.04, 1.78, -0.36] },
+  TURNTABLE: { pos: [0.06, 2.36, 1.5], target: [0.06, 1.66, -0.28] },
+  CRATE: { pos: [-0.42, 2.66, 0.9], target: [-1.08, 1.76, -0.3] },
   CLOCK: { pos: [-1.52, 1.78, 0.88], target: [-1.82, 1.59, 0.18] },
   WINDOW: { pos: [-0.15, 2.48, 0.95], target: [-0.15, 2.48, -2.5] },
   NOTES: { pos: [1.14, 2.26, 0.32], target: [1.18, 1.49, 0.08] },
@@ -70,11 +70,19 @@ const CAMERA_RIG: Record<
   WALLET: { pos: [-0.52, 2.04, 0.96], target: [-0.52, 1.97, 0.38] },
 };
 
+// Durasi dan kurva easing disamakan dengan animasi pembukaan dompet (0.92s easeInOutCubic)
+const CAMERA_TRANSITION_DURATION = 0.92;
+
+function easeInOutCubic(x: number): number {
+  const c = Math.max(0, Math.min(1, x));
+  return c < 0.5 ? 4 * c * c * c : 1 - Math.pow(-2 * c + 2, 3) / 2;
+}
+
 const NOOP = () => {};
 
 /**
  * Compiles shaders behind the curtain and waits for 3 consecutive smooth frames
- * (or 12 frames max) so the opening reveal never stutters.
+ * (or 14 frames max) so the opening reveal never stutters.
  */
 function SceneReadyNotifier({ onReady }: { onReady?: () => void }) {
   const { gl, scene, camera } = useThree();
@@ -121,8 +129,12 @@ function CameraOrbitRig({
 }) {
   const { camera } = useThree();
   const controlsRef = useRef<ComponentRef<typeof OrbitControls>>(null);
-  const isTransitioning = useRef(true);
+  const isTransitioning = useRef(false);
+  const transitionProgress = useRef(1);
   const elapsedRef = useRef(0);
+
+  const startPos = useRef(new THREE.Vector3(...CAMERA_RIG.ENTRY.pos));
+  const startTarget = useRef(new THREE.Vector3(...CAMERA_RIG.ENTRY.target));
   const goalPos = useRef(new THREE.Vector3(...CAMERA_RIG.ENTRY.pos));
   const goalTarget = useRef(new THREE.Vector3(...CAMERA_RIG.ENTRY.target));
   const desiredPos = useMemo(() => new THREE.Vector3(), []);
@@ -130,16 +142,23 @@ function CameraOrbitRig({
 
   useEffect(() => {
     const rig = CAMERA_RIG[focus] || CAMERA_RIG.DESK;
+    startPos.current.copy(camera.position);
+    if (controlsRef.current) {
+      startTarget.current.copy(controlsRef.current.target);
+    } else {
+      startTarget.current.copy(goalTarget.current);
+    }
     goalPos.current.set(...rig.pos);
     goalTarget.current.set(...rig.target);
-    isTransitioning.current = true;
-  }, [focus]);
+    transitionProgress.current = 0;
+    isTransitioning.current = !isEntryMode;
+  }, [focus, isEntryMode, camera]);
 
   useFrame((_, delta) => {
     const controls = controlsRef.current;
     if (!controls) return;
 
-    const dt = Math.min(delta, 0.04);
+    const dt = Math.min(delta, 0.045);
 
     if (isEntryMode) {
       elapsedRef.current += dt;
@@ -163,15 +182,15 @@ function CameraOrbitRig({
     }
 
     if (isTransitioning.current) {
-      const posAlpha = 1 - Math.exp(-4.6 * dt);
-      const tgtAlpha = 1 - Math.exp(-5.0 * dt);
-      camera.position.lerp(goalPos.current, posAlpha);
-      controls.target.lerp(goalTarget.current, tgtAlpha);
+      transitionProgress.current = Math.min(
+        1,
+        transitionProgress.current + dt / CAMERA_TRANSITION_DURATION
+      );
+      const eased = easeInOutCubic(transitionProgress.current);
+      camera.position.lerpVectors(startPos.current, goalPos.current, eased);
+      controls.target.lerpVectors(startTarget.current, goalTarget.current, eased);
 
-      if (
-        camera.position.distanceTo(goalPos.current) < 0.012 &&
-        controls.target.distanceTo(goalTarget.current) < 0.012
-      ) {
+      if (transitionProgress.current >= 1) {
         isTransitioning.current = false;
       }
     }
@@ -312,7 +331,7 @@ function SceneContents(props: OrihourCanvasProps) {
         decay={2}
       />
 
-      {/* Full-Room VSM Sunlight Shadow (covers 100% of all 4 walls so light ONLY enters through window, zero jagged edges) */}
+      {/* Full-Room VSM Sunlight Shadow */}
       <primitive object={sunTarget} />
       <directionalLight
         position={atmosphere.sunLightPosition}

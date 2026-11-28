@@ -71,12 +71,13 @@ export default function OrihourHomePage() {
   const [curtainMounted, setCurtainMounted] = useState(true);
   const [hasEntered, setHasEntered] = useState(false);
 
-  // Smooth Lo-Fi overlay states (keeps 3D canvas mounted behind for zero black flash & smooth camera)
+  // Tactile Sleeve Slide + 3D Depth Scale overlay states
   const [lofiMode, setLofiMode] = useState(false);
   const [lofiMounted, setLofiMounted] = useState(false);
   const [lofiVisible, setLofiVisible] = useState(false);
   const [lofiSource, setLofiSource] = useState<'ENTRY' | 'ROOM'>('ENTRY');
   const lofiCloseTimerRef = useRef<number | null>(null);
+  const lofiStopAudioTimerRef = useRef<number | null>(null);
 
   const [soundEnabled, setSoundEnabled] = useState(true);
 
@@ -165,39 +166,63 @@ export default function OrihourHomePage() {
     []
   );
 
-  const openLofi = useCallback((source: 'ENTRY' | 'ROOM') => {
-    if (lofiCloseTimerRef.current !== null) {
-      window.clearTimeout(lofiCloseTimerRef.current);
-      lofiCloseTimerRef.current = null;
+  const cancelPendingLofiAudioStop = useCallback(() => {
+    if (lofiStopAudioTimerRef.current !== null) {
+      window.clearTimeout(lofiStopAudioTimerRef.current);
+      lofiStopAudioTimerRef.current = null;
     }
-    setLofiSource(source);
-    setLofiMode(true);
-    setLofiMounted(true);
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        setLofiVisible(true);
-      });
-    });
   }, []);
+
+  const openLofi = useCallback(
+    (source: 'ENTRY' | 'ROOM') => {
+      if (lofiCloseTimerRef.current !== null) {
+        window.clearTimeout(lofiCloseTimerRef.current);
+        lofiCloseTimerRef.current = null;
+      }
+      cancelPendingLofiAudioStop();
+      setLofiSource(source);
+      setLofiMode(true);
+      setLofiMounted(true);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          setLofiVisible(true);
+        });
+      });
+    },
+    [cancelPendingLofiAudioStop]
+  );
 
   const closeLofi = useCallback(() => {
     setLofiVisible(false);
     setLofiMode(false);
+
     if (lofiSource === 'ENTRY') {
+      // Hentikan putaran piringan & fade-out singkat sebelum mematikan audio total saat kembali ke Welcome
+      setIsPlaying(false);
+      setProgressRatio(0);
+      audioEngine.setSoundEnabled(false);
+      cancelPendingLofiAudioStop();
+      lofiStopAudioTimerRef.current = window.setTimeout(() => {
+        audioEngine.stopRecord();
+        lofiStopAudioTimerRef.current = null;
+      }, 240);
+
       setHasEntered(false);
       setCameraFocus('ENTRY');
     } else {
+      // Dari dalam ruangan 3D: biarkan musik tetap menyala & turntable tetap berputar
       setHasEntered(true);
       setCameraFocus('DESK');
     }
+
     if (lofiCloseTimerRef.current !== null) {
       window.clearTimeout(lofiCloseTimerRef.current);
     }
     lofiCloseTimerRef.current = window.setTimeout(() => {
       setLofiMounted(false);
       lofiCloseTimerRef.current = null;
-    }, 320);
-  }, [lofiSource]);
+    }, 540);
+  }, [lofiSource, cancelPendingLofiAudioStop]);
 
   const handleSceneReady = useCallback(() => {
     setSceneReady(true);
@@ -207,6 +232,9 @@ export default function OrihourHomePage() {
     return () => {
       if (lofiCloseTimerRef.current !== null) {
         window.clearTimeout(lofiCloseTimerRef.current);
+      }
+      if (lofiStopAudioTimerRef.current !== null) {
+        window.clearTimeout(lofiStopAudioTimerRef.current);
       }
     };
   }, []);
@@ -321,7 +349,6 @@ export default function OrihourHomePage() {
         if (active) setDataReady(true);
       });
 
-    // 1) Fast initial IP-based weather (BMKG for ID / Open-Meteo global)
     fetch('/api/weather', { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -329,7 +356,6 @@ export default function OrihourHomePage() {
       })
       .catch(() => {});
 
-    // 2) Refine with exact browser geolocation if permitted (solves ISP IP routing mismatch like Kasongan vs Palangka Raya/Jakarta)
     if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
@@ -347,9 +373,7 @@ export default function OrihourHomePage() {
             })
             .catch(() => {});
         },
-        () => {
-          // Silently keep IP-based weather when user denies or GPS unavailable
-        },
+        () => {},
         {
           enableHighAccuracy: false,
           timeout: 6500,
@@ -604,6 +628,7 @@ export default function OrihourHomePage() {
       const tracks = activeVinyl.tracks || [];
       if (tracks.length < 2) return;
 
+      cancelPendingLofiAudioStop();
       audioEngine.unlockAndInit(soundEnabled);
       const currentIdx = activeTrack
         ? tracks.findIndex((t) => t.id === activeTrack.id)
@@ -612,7 +637,14 @@ export default function OrihourHomePage() {
       const nextIdx = (safeIdx + delta + tracks.length) % tracks.length;
       startTurntablePlayback(activeVinyl, tracks[nextIdx]);
     },
-    [activeVinyl, activeTrack, isTransferring, soundEnabled, startTurntablePlayback]
+    [
+      activeVinyl,
+      activeTrack,
+      isTransferring,
+      soundEnabled,
+      cancelPendingLofiAudioStop,
+      startTurntablePlayback,
+    ]
   );
 
   const handleSeekTurntable = useCallback(
@@ -625,11 +657,20 @@ export default function OrihourHomePage() {
       if (isPlaying || audioEngine.hasPausedSource(key)) {
         audioEngine.seekToRatio(clamped);
       } else {
+        cancelPendingLofiAudioStop();
+        audioEngine.unlockAndInit(soundEnabled);
         startTurntablePlayback(activeVinyl, activeTrack);
         window.setTimeout(() => audioEngine.seekToRatio(clamped), 80);
       }
     },
-    [activeVinyl, activeTrack, isPlaying, startTurntablePlayback]
+    [
+      activeVinyl,
+      activeTrack,
+      isPlaying,
+      soundEnabled,
+      cancelPendingLofiAudioStop,
+      startTurntablePlayback,
+    ]
   );
 
   const handleToggleCollectionCardPlay = useCallback(
@@ -717,6 +758,10 @@ export default function OrihourHomePage() {
   }, []);
 
   const handleEnterRoom = (withSound: boolean) => {
+    if (lofiStopAudioTimerRef.current !== null) {
+      cancelPendingLofiAudioStop();
+      audioEngine.stopRecord();
+    }
     setSoundEnabled(withSound);
     audioEngine.unlockAndInit(withSound);
     audioEngine.syncWeatherAmbience(weather);
@@ -726,8 +771,14 @@ export default function OrihourHomePage() {
 
   return (
     <main className="relative h-[100dvh] w-screen overflow-hidden bg-[#120E0B] select-none">
-      {/* Persistent 3D Canvas — stays mounted during Lo-Fi mode so return transition is instant & smooth */}
-      <div className="fixed inset-0 z-0 h-[100dvh] w-screen">
+      {/* Persistent 3D Canvas with Smooth 3D Depth Scale Recession when Lo-Fi Sleeve Opens */}
+      <div
+        className={`fixed inset-0 z-0 h-[100dvh] w-screen origin-center will-change-transform transition-[transform,filter,opacity] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+          lofiVisible
+            ? 'scale-[0.955] opacity-75 blur-[3px] brightness-75'
+            : 'scale-100 opacity-100 blur-0 brightness-100'
+        }`}
+      >
         {dataReady && webglSupported && (
           <OrihourCanvas
             config={roomConfig}
@@ -811,7 +862,11 @@ export default function OrihourHomePage() {
           onEnterLofi={() => openLofi('ENTRY')}
         />
       ) : (
-        <>
+        <div
+          className={`transition-opacity duration-350 ease-out ${
+            lofiVisible ? 'pointer-events-none opacity-0' : 'opacity-100'
+          }`}
+        >
           <MinimalHud
             activeVinyl={activeVinyl}
             activeTrack={activeTrack}
@@ -916,34 +971,51 @@ export default function OrihourHomePage() {
             onAddPostcard={handleAddPostcard}
             onClose={() => setPinboardOpen(false)}
           />
-        </>
+        </div>
       )}
 
-      {/* Smooth Cross-Fade Lo-Fi Catalog Overlay — Outer shell overflow-hidden so ONLY middle list scrolls */}
+      {/* Tactile Sleeve Slide Lo-Fi Catalog Overlay */}
       {lofiMounted && (
         <div
-          className={`fixed inset-0 z-40 overflow-hidden select-text transition-opacity duration-300 ease-out ${
-            lofiVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
+          className={`fixed inset-0 z-40 overflow-hidden select-text ${
+            lofiVisible ? 'pointer-events-auto' : 'pointer-events-none'
           }`}
         >
-          <LofiCatalogView
-            config={roomConfig}
-            vinyls={vinyls}
-            genres={genres}
-            activeVinyl={activeVinyl}
-            activeTrack={activeTrack}
-            isPlaying={isPlaying}
-            progressRatio={progressRatio}
-            returnTarget={lofiSource}
-            onSelectAndPlay={(v, subTrack) => {
-              audioEngine.unlockAndInit(soundEnabled);
-              handleSelectVinyl(v, undefined, subTrack);
-            }}
-            onPrevTrack={() => handleStepActiveTrack(-1)}
-            onNextTrack={() => handleStepActiveTrack(1)}
-            onSeekProgress={handleSeekTurntable}
-            onReturnTo3D={closeLofi}
+          {/* Warm translucent depth scrim */}
+          <div
+            className={`pointer-events-none absolute inset-0 bg-[#120E0B]/48 backdrop-blur-[4px] transition-opacity duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+              lofiVisible ? 'opacity-100' : 'opacity-0'
+            }`}
           />
+
+          {/* Sliding Sleeve Container */}
+          <div
+            className={`relative h-full w-full overflow-hidden shadow-[0_-24px_80px_rgba(12,8,4,0.68)] will-change-transform transition-[transform,opacity,border-radius] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+              lofiVisible
+                ? 'translate-y-0 scale-100 rounded-t-none opacity-100'
+                : 'translate-y-[22vh] scale-[0.97] rounded-t-[28px] opacity-0'
+            }`}
+          >
+            <LofiCatalogView
+              config={roomConfig}
+              vinyls={vinyls}
+              genres={genres}
+              activeVinyl={activeVinyl}
+              activeTrack={activeTrack}
+              isPlaying={isPlaying}
+              progressRatio={progressRatio}
+              returnTarget={lofiSource}
+              onSelectAndPlay={(v, subTrack) => {
+                cancelPendingLofiAudioStop();
+                audioEngine.unlockAndInit(soundEnabled);
+                handleSelectVinyl(v, undefined, subTrack);
+              }}
+              onPrevTrack={() => handleStepActiveTrack(-1)}
+              onNextTrack={() => handleStepActiveTrack(1)}
+              onSeekProgress={handleSeekTurntable}
+              onReturnTo3D={closeLofi}
+            />
+          </div>
         </div>
       )}
     </main>
