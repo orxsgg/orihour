@@ -102,6 +102,41 @@ export interface OrphanCleanupResult {
   byAccount: OrphanAccountSummary[];
 }
 
+export type StorageFileKind = 'audio' | 'image' | 'other';
+
+export interface StorageFileReferenceInfo {
+  sourceType: 'vinyl_cover' | 'vinyl_audio' | 'track_audio' | 'poster' | 'avatar';
+  label: string;
+}
+
+export interface StorageFileItem {
+  objectKey: string;
+  fileName: string;
+  size: number;
+  kind: StorageFileKind;
+  isReferenced: boolean;
+  references: StorageFileReferenceInfo[];
+}
+
+export interface TransferSingleFileParams {
+  sourceAccountId: string;
+  targetAccountId: string;
+  objectKey: string;
+  mode: 'move' | 'copy';
+  updateReferences?: boolean;
+  appOrigin?: string;
+}
+
+export interface TransferSingleFileResult {
+  ok: true;
+  objectKey: string;
+  sizeBytes: number;
+  mode: 'move' | 'copy';
+  newPublicUrl: string;
+  updatedReferences: number;
+  deletedFromSource: boolean;
+}
+
 export function getPrimaryAdminDb(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -687,11 +722,76 @@ function decodeXmlEntities(str: string): string {
     .replace(/&apos;/g, "'");
 }
 
+interface StoredObjectEntry {
+  key: string;
+  size: number;
+}
+
 interface B2ObjectVersion {
   key: string;
   versionId: string;
   size: number;
   isDeleteMarker: boolean;
+}
+
+async function listB2CurrentObjects(creds: {
+  endpointUrl: string;
+  bucket: string;
+  accessKeyId: string;
+  secret: string;
+}): Promise<StoredObjectEntry[]> {
+  const results: StoredObjectEntry[] = [];
+  let continuationToken = '';
+  let pages = 0;
+
+  while (pages < 30) {
+    pages += 1;
+    const query: Record<string, string | undefined> = {
+      'list-type': '2',
+      'max-keys': '1000',
+    };
+    if (continuationToken) {
+      query['continuation-token'] = continuationToken;
+    }
+
+    const res = await signedB2Request({
+      method: 'GET',
+      endpointUrl: creds.endpointUrl,
+      bucket: creds.bucket,
+      query,
+      accessKeyId: creds.accessKeyId,
+      secretAccessKey: creds.secret,
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Backblaze B2 ListObjects error (${res.status}): ${text.slice(0, 180)}`);
+    }
+
+    const xml = await res.text();
+    const contentBlocks = xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g);
+    for (const m of contentBlocks) {
+      const block = m[1];
+      const keyM = block.match(/<Key>([\s\S]*?)<\/Key>/);
+      const sizeM = block.match(/<Size>(\d+)<\/Size>/);
+      if (keyM?.[1]) {
+        results.push({
+          key: decodeXmlEntities(keyM[1]),
+          size: Number(sizeM?.[1] || 0) || 0,
+        });
+      }
+    }
+
+    const isTruncated = /<IsTruncated>true<\/IsTruncated>/i.test(xml);
+    const nextTokM = xml.match(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/);
+    if (isTruncated && nextTokM?.[1]) {
+      continuationToken = decodeXmlEntities(nextTokM[1]);
+    } else {
+      break;
+    }
+  }
+
+  return results;
 }
 
 async function listB2ObjectVersions(
@@ -810,11 +910,6 @@ async function deleteB2ObjectVersion(
 /* ============================================================
    Scan Real Storage Usage & Keep-Alive Ping (Supabase & B2)
    ============================================================ */
-
-interface StoredObjectEntry {
-  key: string;
-  size: number;
-}
 
 async function listSupabaseObjectsRecursive(
   client: SupabaseClient,
@@ -1095,6 +1190,93 @@ export async function collectReferencedMediaUrls(db: SupabaseClient): Promise<Se
   return urls;
 }
 
+type RefMapByKey = Map<string, StorageFileReferenceInfo[]>;
+
+async function collectDetailedReferencesForAccount(
+  db: SupabaseClient,
+  accountId: string,
+  accounts: StorageAccountRow[]
+): Promise<RefMapByKey> {
+  const [vinylsRes, postersRes, settingsRes] = await Promise.all([
+    db.from('vinyl_records').select('id, title, artist, cover_url, audio_url, tracks'),
+    db.from('wall_posters').select('*'),
+    db.from('room_settings').select('owner_profile').eq('id', 1).maybeSingle(),
+  ]);
+
+  if (vinylsRes.error) {
+    throw new Error(`Gagal membaca vinyl_records: ${vinylsRes.error.message}`);
+  }
+  if (postersRes.error) {
+    throw new Error(`Gagal membaca wall_posters: ${postersRes.error.message}`);
+  }
+  if (settingsRes.error) {
+    throw new Error(`Gagal membaca room_settings: ${settingsRes.error.message}`);
+  }
+
+  const map: RefMapByKey = new Map();
+  const pushRef = (rawUrl: unknown, info: StorageFileReferenceInfo) => {
+    if (typeof rawUrl !== 'string' || !rawUrl.trim()) return;
+    const ref = extractStorageRefFromUrl(rawUrl, accounts);
+    if (!ref || ref.accountId !== accountId) return;
+    const list = map.get(ref.objectKey) || [];
+    if (!list.some((r) => r.sourceType === info.sourceType && r.label === info.label)) {
+      list.push(info);
+    }
+    map.set(ref.objectKey, list);
+  };
+
+  for (const row of (vinylsRes.data || []) as Array<{
+    title?: string | null;
+    artist?: string | null;
+    cover_url?: string | null;
+    audio_url?: string | null;
+    tracks?: unknown;
+  }>) {
+    const vinylLabel = [row.title, row.artist].filter(Boolean).join(' — ') || 'Vinyl';
+    pushRef(row.cover_url, {
+      sourceType: 'vinyl_cover',
+      label: `Cover · ${vinylLabel}`,
+    });
+    pushRef(row.audio_url, {
+      sourceType: 'vinyl_audio',
+      label: `Audio · ${vinylLabel}`,
+    });
+    if (Array.isArray(row.tracks)) {
+      for (const trk of row.tracks as Array<Record<string, unknown>>) {
+        if (!trk || typeof trk !== 'object') continue;
+        const trkTitle =
+          typeof trk.title === 'string' && trk.title.trim() ? trk.title.trim() : 'Track';
+        const trkUrl = trk.audioUrl ?? trk.audio_url;
+        pushRef(trkUrl, {
+          sourceType: 'track_audio',
+          label: `Track · ${trkTitle} (${row.title || 'Album'})`,
+        });
+      }
+    }
+  }
+
+  for (const row of (postersRes.data || []) as Array<Record<string, unknown>>) {
+    const posterTitle =
+      typeof row.title === 'string' && row.title.trim() ? row.title.trim() : 'Poster Dinding';
+    pushRef(row.image_url, {
+      sourceType: 'poster',
+      label: `Poster · ${posterTitle}`,
+    });
+  }
+
+  const ownerProfile = (
+    settingsRes.data as { owner_profile?: Record<string, unknown> | null } | null
+  )?.owner_profile;
+  if (ownerProfile && typeof ownerProfile === 'object') {
+    pushRef(ownerProfile.avatarUrl ?? ownerProfile.avatar_url, {
+      sourceType: 'avatar',
+      label: 'Foto Profil Pemilik (Dompet)',
+    });
+  }
+
+  return map;
+}
+
 function buildReferencedKeyMap(
   urls: Set<string>,
   accounts: StorageAccountRow[]
@@ -1129,6 +1311,24 @@ async function refreshAccountUsageInDb(db: SupabaseClient, acc: StorageAccountRo
   } catch {
     // Non-fatal; admin can re-scan manually anytime
   }
+}
+
+export async function refreshAccountsUsageByIds(
+  db: SupabaseClient,
+  accountIds: string[]
+): Promise<StoragePoolOverview> {
+  const uniqueIds = Array.from(new Set(accountIds.filter(Boolean)));
+  const { accounts } = await ensurePrimaryStorageBootstrapped(db);
+
+  for (const id of uniqueIds) {
+    const acc = accounts.find((a) => a.id === id);
+    if (acc) {
+      await refreshAccountUsageInDb(db, acc);
+    }
+  }
+
+  const fresh = await ensurePrimaryStorageBootstrapped(db);
+  return buildStorageOverview(fresh.accounts, fresh.settings);
 }
 
 export async function deleteMediaUrlsFromStoragePool(
@@ -1313,6 +1513,460 @@ export async function cleanupOrphanedStorageFiles(
     totalDeletedCount,
     totalDeletedBytes,
     byAccount,
+  };
+}
+
+/* ============================================================
+   Server-to-Server Storage Transfer (Move / Copy)
+   ============================================================ */
+
+function inferFileKind(objectKey: string, refs: StorageFileReferenceInfo[]): StorageFileKind {
+  if (refs.some((r) => r.sourceType === 'vinyl_audio' || r.sourceType === 'track_audio')) {
+    return 'audio';
+  }
+  if (
+    refs.some(
+      (r) =>
+        r.sourceType === 'vinyl_cover' ||
+        r.sourceType === 'poster' ||
+        r.sourceType === 'avatar'
+    )
+  ) {
+    return 'image';
+  }
+  const lower = objectKey.toLowerCase();
+  if (/\.(mp3|m4a|wav|ogg|flac|aac|webm)$/i.test(lower) || lower.startsWith('audio/')) {
+    return 'audio';
+  }
+  if (
+    /\.(jpg|jpeg|png|webp|gif|avif|svg)$/i.test(lower) ||
+    lower.startsWith('covers/') ||
+    lower.startsWith('posters/') ||
+    lower.startsWith('avatars/')
+  ) {
+    return 'image';
+  }
+  return 'other';
+}
+
+function resolveContentType(objectKey: string, headerType: string | null): string {
+  const cleanHeader = (headerType || '').split(';')[0].trim().toLowerCase();
+  if (cleanHeader && cleanHeader !== 'application/octet-stream' && cleanHeader !== 'binary/octet-stream') {
+    return cleanHeader;
+  }
+
+  const lower = objectKey.toLowerCase();
+  if (lower.endsWith('.mp3')) return 'audio/mpeg';
+  if (lower.endsWith('.m4a')) return 'audio/mp4';
+  if (lower.endsWith('.wav')) return 'audio/wav';
+  if (lower.endsWith('.ogg')) return 'audio/ogg';
+  if (lower.endsWith('.flac')) return 'audio/flac';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.avif')) return 'image/avif';
+  if (lower.endsWith('.svg')) return 'image/svg+xml';
+  return 'application/octet-stream';
+}
+
+export async function listAccountFilesWithContext(
+  db: SupabaseClient,
+  accountId: string
+): Promise<{
+  account: { id: string; name: string; provider: StorageProvider; bucket: string };
+  files: StorageFileItem[];
+  totalBytes: number;
+}> {
+  const { accounts } = await ensurePrimaryStorageBootstrapped(db);
+  const acc = accounts.find((a) => a.id === accountId);
+  if (!acc) {
+    throw new Error('Akun penyimpanan asal tidak ditemukan.');
+  }
+
+  const creds = resolveAccountCredentials(acc);
+  let objects: StoredObjectEntry[] = [];
+
+  if (acc.provider === 'supabase') {
+    if (!creds.endpointUrl || !creds.secret) {
+      throw new Error(`Kredensial Supabase untuk "${acc.name}" belum lengkap.`);
+    }
+    const sb = createClient(creds.endpointUrl, creds.secret, {
+      auth: { persistSession: false },
+    });
+    objects = await listSupabaseObjectsRecursive(sb, creds.bucket);
+  } else {
+    if (!creds.endpointUrl || !creds.accessKeyId || !creds.secret) {
+      throw new Error(`Kredensial Backblaze B2 untuk "${acc.name}" belum lengkap.`);
+    }
+    objects = await listB2CurrentObjects(creds);
+  }
+
+  const refMap = await collectDetailedReferencesForAccount(db, acc.id, accounts);
+
+  const files: StorageFileItem[] = objects
+    .map((obj) => {
+      const references = refMap.get(obj.key) || [];
+      const parts = obj.key.split('/');
+      const fileName = parts[parts.length - 1] || obj.key;
+      return {
+        objectKey: obj.key,
+        fileName,
+        size: obj.size,
+        kind: inferFileKind(obj.key, references),
+        isReferenced: references.length > 0,
+        references,
+      };
+    })
+    .sort((a, b) => {
+      if (a.isReferenced !== b.isReferenced) return a.isReferenced ? -1 : 1;
+      return b.size - a.size || a.objectKey.localeCompare(b.objectKey);
+    });
+
+  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+
+  return {
+    account: {
+      id: acc.id,
+      name: acc.name,
+      provider: acc.provider,
+      bucket: creds.bucket,
+    },
+    files,
+    totalBytes,
+  };
+}
+
+async function replaceStorageObjectReferencesInDb(
+  db: SupabaseClient,
+  sourceAccountId: string,
+  objectKey: string,
+  newPublicUrl: string,
+  accounts: StorageAccountRow[]
+): Promise<number> {
+  const matchesTarget = (rawUrl: unknown): boolean => {
+    if (typeof rawUrl !== 'string' || !rawUrl.trim()) return false;
+    const ref = extractStorageRefFromUrl(rawUrl, accounts);
+    return Boolean(ref && ref.accountId === sourceAccountId && ref.objectKey === objectKey);
+  };
+
+  let updatedCount = 0;
+
+  // 1. vinyl_records (cover_url, audio_url, tracks[])
+  const { data: vinylRows, error: vinylErr } = await db
+    .from('vinyl_records')
+    .select('id, cover_url, audio_url, tracks');
+  if (vinylErr) {
+    throw new Error(`Gagal membaca vinyl_records saat update URL: ${vinylErr.message}`);
+  }
+
+  for (const row of (vinylRows || []) as Array<{
+    id: string;
+    cover_url?: string | null;
+    audio_url?: string | null;
+    tracks?: unknown;
+  }>) {
+    const patch: Record<string, unknown> = {};
+    let rowChanged = false;
+
+    if (matchesTarget(row.cover_url)) {
+      patch.cover_url = newPublicUrl;
+      rowChanged = true;
+      updatedCount += 1;
+    }
+    if (matchesTarget(row.audio_url)) {
+      patch.audio_url = newPublicUrl;
+      rowChanged = true;
+      updatedCount += 1;
+    }
+    if (Array.isArray(row.tracks)) {
+      let tracksChanged = false;
+      const nextTracks = (row.tracks as Array<Record<string, unknown>>).map((trk) => {
+        if (!trk || typeof trk !== 'object') return trk;
+        let itemChanged = false;
+        const nextItem: Record<string, unknown> = { ...trk };
+        if (matchesTarget(trk.audioUrl)) {
+          nextItem.audioUrl = newPublicUrl;
+          itemChanged = true;
+          updatedCount += 1;
+        }
+        if (matchesTarget(trk.audio_url)) {
+          nextItem.audio_url = newPublicUrl;
+          itemChanged = true;
+          updatedCount += 1;
+        }
+        if (itemChanged) tracksChanged = true;
+        return itemChanged ? nextItem : trk;
+      });
+      if (tracksChanged) {
+        patch.tracks = nextTracks;
+        rowChanged = true;
+      }
+    }
+
+    if (rowChanged) {
+      const { error: upErr } = await db.from('vinyl_records').update(patch).eq('id', row.id);
+      if (upErr) {
+        throw new Error(`Gagal memperbarui URL vinyl (${row.id}): ${upErr.message}`);
+      }
+    }
+  }
+
+  // 2. wall_posters (image_url)
+  const { data: posterRows, error: posterErr } = await db
+    .from('wall_posters')
+    .select('id, image_url');
+  if (posterErr) {
+    throw new Error(`Gagal membaca wall_posters saat update URL: ${posterErr.message}`);
+  }
+
+  for (const row of (posterRows || []) as Array<{ id: string; image_url?: string | null }>) {
+    if (matchesTarget(row.image_url)) {
+      const { error: upErr } = await db
+        .from('wall_posters')
+        .update({ image_url: newPublicUrl })
+        .eq('id', row.id);
+      if (upErr) {
+        throw new Error(`Gagal memperbarui URL poster (${row.id}): ${upErr.message}`);
+      }
+      updatedCount += 1;
+    }
+  }
+
+  // 3. room_settings (owner_profile.avatarUrl)
+  const { data: settingsRow, error: settingsErr } = await db
+    .from('room_settings')
+    .select('owner_profile')
+    .eq('id', 1)
+    .maybeSingle();
+  if (settingsErr) {
+    throw new Error(`Gagal membaca room_settings saat update URL: ${settingsErr.message}`);
+  }
+
+  const ownerProfile = (
+    settingsRow as { owner_profile?: Record<string, unknown> | null } | null
+  )?.owner_profile;
+  if (ownerProfile && typeof ownerProfile === 'object') {
+    let profileChanged = false;
+    const nextProfile: Record<string, unknown> = { ...ownerProfile };
+    if (matchesTarget(ownerProfile.avatarUrl)) {
+      nextProfile.avatarUrl = newPublicUrl;
+      profileChanged = true;
+      updatedCount += 1;
+    }
+    if (matchesTarget(ownerProfile.avatar_url)) {
+      nextProfile.avatar_url = newPublicUrl;
+      profileChanged = true;
+      updatedCount += 1;
+    }
+    if (profileChanged) {
+      const { error: upErr } = await db
+        .from('room_settings')
+        .update({ owner_profile: nextProfile })
+        .eq('id', 1);
+      if (upErr) {
+        throw new Error(`Gagal memperbarui URL foto profil: ${upErr.message}`);
+      }
+    }
+  }
+
+  return updatedCount;
+}
+
+export async function transferSingleStorageFile(
+  db: SupabaseClient,
+  params: TransferSingleFileParams
+): Promise<TransferSingleFileResult> {
+  const objectKey = params.objectKey.trim().replace(/^\/+/, '');
+  if (!objectKey) {
+    throw new Error('Object key file tidak valid.');
+  }
+  if (params.sourceAccountId === params.targetAccountId) {
+    throw new Error('Akun penyimpanan asal dan tujuan tidak boleh sama.');
+  }
+
+  const { accounts } = await ensurePrimaryStorageBootstrapped(db);
+  const source = accounts.find((a) => a.id === params.sourceAccountId);
+  const target = accounts.find((a) => a.id === params.targetAccountId);
+
+  if (!source) throw new Error('Akun penyimpanan asal tidak ditemukan.');
+  if (!target) throw new Error('Akun penyimpanan tujuan tidak ditemukan.');
+
+  const sourceCreds = resolveAccountCredentials(source);
+  const targetCreds = resolveAccountCredentials(target);
+
+  // 1. Unduh file dari akun asal (server-to-server)
+  let downloadUrl = '';
+  let sourceSb: SupabaseClient | null = null;
+
+  if (source.provider === 'supabase') {
+    if (!sourceCreds.endpointUrl || !sourceCreds.secret) {
+      throw new Error(`Kredensial Supabase asal "${source.name}" belum lengkap.`);
+    }
+    sourceSb = createClient(sourceCreds.endpointUrl, sourceCreds.secret, {
+      auth: { persistSession: false },
+    });
+    const { data: signed, error: signErr } = await sourceSb.storage
+      .from(sourceCreds.bucket)
+      .createSignedUrl(objectKey, 300);
+
+    if (signErr || !signed?.signedUrl) {
+      throw new Error(
+        `Gagal mengakses file "${objectKey}" di ${source.name}: ${
+          signErr?.message || 'File tidak ditemukan'
+        }`
+      );
+    }
+
+    downloadUrl = signed.signedUrl.startsWith('http')
+      ? signed.signedUrl
+      : `${sourceCreds.endpointUrl}/storage/v1${
+          signed.signedUrl.startsWith('/') ? '' : '/'
+        }${signed.signedUrl}`;
+  } else {
+    if (!sourceCreds.endpointUrl || !sourceCreds.accessKeyId || !sourceCreds.secret) {
+      throw new Error(`Kredensial Backblaze B2 asal "${source.name}" belum lengkap.`);
+    }
+    downloadUrl = createB2PresignedReadUrl({
+      endpointUrl: sourceCreds.endpointUrl,
+      bucket: sourceCreds.bucket,
+      objectKey,
+      accessKeyId: sourceCreds.accessKeyId,
+      secretAccessKey: sourceCreds.secret,
+      method: 'GET',
+      expiresSec: 600,
+    });
+  }
+
+  const dlRes = await fetch(downloadUrl, {
+    cache: 'no-store',
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!dlRes.ok) {
+    throw new Error(
+      `Gagal mengunduh "${objectKey}" dari ${source.name} (HTTP ${dlRes.status}).`
+    );
+  }
+
+  const arrayBuf = await dlRes.arrayBuffer();
+  const sizeBytes = arrayBuf.byteLength;
+  const contentType = resolveContentType(objectKey, dlRes.headers.get('content-type'));
+
+  // 2. Unggah file ke akun tujuan
+  let newPublicUrl = '';
+
+  if (target.provider === 'supabase') {
+    if (!targetCreds.endpointUrl || !targetCreds.secret) {
+      throw new Error(`Kredensial Supabase tujuan "${target.name}" belum lengkap.`);
+    }
+    const targetSb = createClient(targetCreds.endpointUrl, targetCreds.secret, {
+      auth: { persistSession: false },
+    });
+    const { error: upErr } = await targetSb.storage
+      .from(targetCreds.bucket)
+      .upload(objectKey, new Uint8Array(arrayBuf), {
+        contentType,
+        upsert: true,
+      });
+
+    if (upErr) {
+      throw new Error(`Gagal mengunggah "${objectKey}" ke ${target.name}: ${upErr.message}`);
+    }
+
+    const { data: pub } = targetSb.storage.from(targetCreds.bucket).getPublicUrl(objectKey);
+    newPublicUrl = pub.publicUrl;
+  } else {
+    if (!targetCreds.endpointUrl || !targetCreds.accessKeyId || !targetCreds.secret) {
+      throw new Error(`Kredensial Backblaze B2 tujuan "${target.name}" belum lengkap.`);
+    }
+    const putUrl = createB2PresignedPutUrl({
+      endpointUrl: targetCreds.endpointUrl,
+      bucket: targetCreds.bucket,
+      objectKey,
+      accessKeyId: targetCreds.accessKeyId,
+      secretAccessKey: targetCreds.secret,
+      expiresSec: 900,
+    });
+
+    const putRes = await fetch(putUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': String(sizeBytes),
+      },
+      body: arrayBuf,
+      cache: 'no-store',
+      signal: AbortSignal.timeout(50000),
+    });
+
+    if (!putRes.ok) {
+      const errTxt = await putRes.text().catch(() => '');
+      throw new Error(
+        `Gagal mengunggah "${objectKey}" ke ${target.name} (HTTP ${putRes.status}): ${errTxt.slice(
+          0,
+          160
+        )}`
+      );
+    }
+
+    const encodedKey = objectKey
+      .split('/')
+      .map((seg) => encodeURIComponent(seg))
+      .join('/');
+    const safeOrigin = (params.appOrigin || 'https://orihour.vercel.app').replace(/\/+$/, '');
+    newPublicUrl = targetCreds.publicBaseUrl
+      ? `${targetCreds.publicBaseUrl}/${encodedKey}`
+      : `${safeOrigin}/api/media/b2/${encodeURIComponent(target.id)}/${encodedKey}`;
+  }
+
+  // 3. Perbarui referensi URL di database (wajib untuk mode 'move', opsional untuk 'copy')
+  const shouldUpdateDb = params.mode === 'move' || Boolean(params.updateReferences);
+  let updatedReferences = 0;
+  if (shouldUpdateDb) {
+    updatedReferences = await replaceStorageObjectReferencesInDb(
+      db,
+      source.id,
+      objectKey,
+      newPublicUrl,
+      accounts
+    );
+  }
+
+  // 4. Hapus permanen file di akun asal KHUSUS mode 'move'
+  let deletedFromSource = false;
+  if (params.mode === 'move') {
+    if (source.provider === 'supabase' && sourceSb) {
+      const { error: rmErr } = await sourceSb.storage
+        .from(sourceCreds.bucket)
+        .remove([objectKey]);
+      if (rmErr) {
+        throw new Error(
+          `File sudah tersalin & URL diperbarui, namun gagal hapus file lama di ${source.name}: ${rmErr.message}`
+        );
+      }
+      deletedFromSource = true;
+    } else if (source.provider === 'b2') {
+      const versions = await listB2ObjectVersions(sourceCreds, objectKey);
+      const exactMatches = versions.filter((v) => v.key === objectKey);
+      if (exactMatches.length === 0) {
+        await deleteB2ObjectVersion(sourceCreds, objectKey);
+      } else {
+        for (const v of exactMatches) {
+          await deleteB2ObjectVersion(sourceCreds, v.key, v.versionId);
+        }
+      }
+      deletedFromSource = true;
+    }
+  }
+
+  return {
+    ok: true,
+    objectKey,
+    sizeBytes,
+    mode: params.mode,
+    newPublicUrl,
+    updatedReferences,
+    deletedFromSource,
   };
 }
 

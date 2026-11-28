@@ -26,8 +26,10 @@ import {
   ChevronDown,
   ChevronUp,
   Sparkles,
+  ArrowRightLeft,
 } from 'lucide-react';
 import ConfirmDialog from '@/components/ui/ConfirmDialog';
+import StorageTransferModal from '@/components/admin/StorageTransferModal';
 
 export type StorageProvider = 'supabase' | 'b2';
 export type StorageHealthStatus = 'ok' | 'warning' | 'full' | 'disabled';
@@ -168,6 +170,9 @@ export default function StoragePoolTab({
   const [showSecret, setShowSecret] = useState(false);
   const [savingForm, setSavingForm] = useState(false);
 
+  const [transferModalOpen, setTransferModalOpen] = useState(false);
+  const [transferInitialSourceId, setTransferInitialSourceId] = useState<string | null>(null);
+
   const [showGuide, setShowGuide] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
@@ -206,6 +211,12 @@ export default function StoragePoolTab({
   const flashError = (msg: string) => {
     setStatusMsg(null);
     setErrorMsg(msg);
+  };
+
+  const openTransferModal = (sourceAccountId?: string) => {
+    setErrorMsg(null);
+    setTransferInitialSourceId(sourceAccountId || null);
+    setTransferModalOpen(true);
   };
 
   const copyText = async (key: string, text: string) => {
@@ -565,6 +576,7 @@ export default function StoragePoolTab({
     .filter((a) => a.isEnabled)
     .reduce((sum, a) => sum + a.usedBytes, 0);
   const activeAccount = accounts.find((a) => a.isActive) || null;
+  const canTransfer = accounts.length >= 2;
   const keepAliveEndpoint =
     typeof window !== 'undefined'
       ? `${window.location.origin}/api/cron/keep-alive`
@@ -670,7 +682,7 @@ export default function StoragePoolTab({
               Multi-Storage Pool (Supabase &amp; Backblaze B2)
             </h2>
             <p className="mt-0.5 text-xs text-[#655040]">
-              Database utama tetap satu, sedangkan file audio MP3 dan cover dibagi otomatis dan ikut terhapus permanen saat koleksi dihapus.
+              Database utama tetap satu, sedangkan file audio MP3 dan cover dapat dibagi, dipindahkan, atau disalin antar penyimpanan kapan saja.
             </p>
           </div>
 
@@ -758,6 +770,21 @@ export default function StoragePoolTab({
         {/* Utility Buttons Row */}
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#4A2E1B]/10 pt-3">
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={!canTransfer || busyAction !== null || loading}
+              onClick={() => openTransferModal()}
+              title={
+                canTransfer
+                  ? 'Pindahkan atau salin file antar akun penyimpanan'
+                  : 'Tambahkan minimal 2 akun penyimpanan untuk menggunakan fitur Transfer'
+              }
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-xl bg-[#4A2E1B] px-3 py-1.5 text-xs font-semibold text-[#FAF5EC] shadow-xs transition hover:bg-[#3A2213] disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              <ArrowRightLeft className="h-3.5 w-3.5 text-[#E6C79C]" />
+              <span>Transfer File</span>
+            </button>
+
             <button
               type="button"
               disabled={busyAction !== null || loading}
@@ -1045,6 +1072,19 @@ export default function StoragePoolTab({
                     </button>
                   )}
 
+                  {canTransfer && (
+                    <button
+                      type="button"
+                      disabled={busyAction !== null}
+                      onClick={() => openTransferModal(acc.id)}
+                      className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-[#4A2E1B]/22 bg-[#FFF6E6] px-2.5 py-1.5 text-[11px] font-semibold text-[#4A2E1B] transition hover:bg-[#F2E2C4] disabled:opacity-50"
+                      title={`Pindahkan atau salin file dari ${acc.name} ke akun lain`}
+                    >
+                      <ArrowRightLeft className="h-3 w-3" />
+                      <span>Transfer</span>
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     disabled={busyAction !== null}
@@ -1113,6 +1153,18 @@ export default function StoragePoolTab({
           );
         })}
       </div>
+
+      {/* Transfer Files Between Storage Accounts Modal */}
+      <StorageTransferModal
+        open={transferModalOpen}
+        accounts={accounts}
+        initialSourceId={transferInitialSourceId}
+        onClose={() => setTransferModalOpen(false)}
+        onCompleted={(nextOverview, summaryMessage) => {
+          onOverviewUpdated(nextOverview);
+          flashSuccess(summaryMessage);
+        }}
+      />
 
       {/* Add / Edit Storage Account Modal (Portal at z-[90]) */}
       {editing &&
