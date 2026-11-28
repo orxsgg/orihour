@@ -14,9 +14,34 @@ import {
 interface DeskWallet3DProps {
   owner: OwnerProfile;
   isOpen: boolean;
+  lightBoost?: number;
   onOpenWallet: () => void;
   onHoverLabel: (label: string | null) => void;
 }
+
+const WALLET_EMISSIVE_WEIGHTS: Record<string, number> = {
+  openSpine: 0.36,
+  closedSpine: 0.32,
+  rightPanel: 0.32,
+  backCover: 0.28,
+  rightInterior: 0.36,
+  bill1: 0.3,
+  bill2: 0.3,
+  idCard: 0.34,
+  idFrame: 0.42,
+  leftPanel: 0.32,
+  frontCover: 0.28,
+  leftInterior: 0.36,
+  bill3: 0.3,
+  topCard: 0.34,
+  topChip: 0.34,
+  pocket1: 0.44,
+  midCard: 0.32,
+  midStripe: 0.34,
+  pocket2: 0.44,
+  pocket3: 0.44,
+  brassPin: 0.34,
+};
 
 function easeInOutCubic(x: number): number {
   const c = Math.max(0, Math.min(1, x));
@@ -172,6 +197,7 @@ function createClosedFoldSpineGeometry(height: number): THREE.BufferGeometry {
 export default function DeskWallet3D({
   owner,
   isOpen,
+  lightBoost = 1,
   onOpenWallet,
   onHoverLabel,
 }: DeskWallet3DProps) {
@@ -180,12 +206,21 @@ export default function DeskWallet3D({
   const leftFlapPivotRef = useRef<THREE.Group>(null);
   const openSpineRef = useRef<THREE.Mesh>(null);
   const closedSpineRef = useRef<THREE.Mesh>(null);
+  const matRefs = useRef<Record<string, THREE.MeshStandardMaterial | null>>({});
 
   const openAnim = useRef(0);
   const hoverLiftRef = useRef(0);
   const elapsedRef = useRef(0);
+  const lightBoostRef = useRef(lightBoost);
+  const currentLightRef = useRef(0);
+  lightBoostRef.current = lightBoost;
+
   const [hovered, setHovered] = useState(false);
   const [avatarImg, setAvatarImg] = useState<HTMLImageElement | null>(null);
+
+  const bindMat = (key: string) => (mat: THREE.MeshStandardMaterial | null) => {
+    matRefs.current[key] = mat;
+  };
 
   // Always clear hover state when wallet opens or closes so it never pops up on landing
   useEffect(() => {
@@ -402,19 +437,27 @@ export default function DeskWallet3D({
 
     const p = openAnim.current;
 
-    // Symmetric easeInOutCubic for both lift and hinge:
-    // Opening: lifts smoothly first, then unfolds gracefully.
-    // Closing: folds shut cleanly first (zero end-slam), then sets gently onto the walnut desk.
     const liftT = easeInOutCubic(Math.min(1, p / 0.72));
     const hingeT = easeInOutCubic(Math.max(0, (p - 0.22) / 0.78));
 
-    // Smoothly damped hover lift (eliminates any 1-frame snap when landing on the desk)
     const targetHoverLift = !isOpen && hovered && p < 0.005 ? 0.012 : 0;
     hoverLiftRef.current += (targetHoverLift - hoverLiftRef.current) * Math.min(1, dt * 11);
 
-    // Smoothly faded idle bob while open (zero step jump when closing starts)
     const bobWeight = smoothstepRange(0.86, 1.0, p);
     const idleBob = Math.sin(elapsedRef.current * 1.5) * 0.0018 * bobWeight;
+
+    // Pencahayaan terisolasi khusus dompet: menyala mulus saat terangkat,
+    // tetap konsisten selama terbuka & melipat turun, lalu padam halus saat mendarat di meja.
+    const targetLight = smoothstepRange(0.02, 0.22, p) * lightBoostRef.current;
+    currentLightRef.current += (targetLight - currentLightRef.current) * Math.min(1, dt * 14);
+    const intensityScale = currentLightRef.current;
+
+    for (const key in WALLET_EMISSIVE_WEIGHTS) {
+      const mat = matRefs.current[key];
+      if (mat) {
+        mat.emissiveIntensity = WALLET_EMISSIVE_WEIGHTS[key] * intensityScale;
+      }
+    }
 
     if (rootRef.current) {
       rootRef.current.position.lerpVectors(math.closedPos, math.openPos, liftT);
@@ -504,11 +547,15 @@ export default function DeskWallet3D({
           receiveShadow
         >
           <meshStandardMaterial
+            ref={bindMat('openSpine')}
             map={leather.map}
             bumpMap={leather.bumpMap}
             bumpScale={0.0035}
             roughnessMap={leather.roughnessMap}
             color="#351E12"
+            emissive="#351E12"
+            emissiveMap={leather.map}
+            emissiveIntensity={0}
             roughness={0.7}
           />
         </mesh>
@@ -522,11 +569,15 @@ export default function DeskWallet3D({
           receiveShadow
         >
           <meshStandardMaterial
+            ref={bindMat('closedSpine')}
             map={leather.map}
             bumpMap={leather.bumpMap}
             bumpScale={0.0035}
             roughnessMap={leather.roughnessMap}
             color="#382013"
+            emissive="#382013"
+            emissiveMap={leather.map}
+            emissiveIntensity={0}
             roughness={0.68}
           />
         </mesh>
@@ -535,10 +586,14 @@ export default function DeskWallet3D({
         <group position={[0, 0, 0]}>
           <mesh geometry={geos.rightPanelGeo} position={[0, 0, -0.0082]} castShadow receiveShadow>
             <meshStandardMaterial
+              ref={bindMat('rightPanel')}
               map={leather.map}
               bumpMap={leather.bumpMap}
               bumpScale={0.004}
               roughnessMap={leather.roughnessMap}
+              emissive="#FFF5E6"
+              emissiveMap={leather.map}
+              emissiveIntensity={0}
               roughness={0.68}
             />
           </mesh>
@@ -550,34 +605,58 @@ export default function DeskWallet3D({
             scale={[-1, 1, 1]}
           >
             <meshStandardMaterial
+              ref={bindMat('backCover')}
               map={backCoverTex}
               bumpMap={leather.bumpMap}
               bumpScale={0.003}
+              emissive="#FFF5E6"
+              emissiveMap={backCoverTex}
+              emissiveIntensity={0}
               roughness={0.64}
             />
           </mesh>
 
           <mesh geometry={geos.rightFaceGeo} position={[0, 0, 0.0003]}>
             <meshStandardMaterial
+              ref={bindMat('rightInterior')}
               map={rightIntTex}
               bumpMap={leather.bumpMap}
               bumpScale={0.002}
+              emissive="#FFF5E6"
+              emissiveMap={rightIntTex}
+              emissiveIntensity={0}
               roughness={0.74}
             />
           </mesh>
 
           <mesh position={[rightCenterX, H * 0.46, -0.0035]} rotation={[0, 0, -0.015]}>
             <boxGeometry args={[W * 0.8, 0.018, 0.0018]} />
-            <meshStandardMaterial color="#DFD8C5" roughness={0.88} />
+            <meshStandardMaterial
+              ref={bindMat('bill1')}
+              color="#DFD8C5"
+              emissive="#DFD8C5"
+              emissiveIntensity={0}
+              roughness={0.88}
+            />
           </mesh>
           <mesh position={[rightCenterX + 0.003, H * 0.48, -0.0055]} rotation={[0, 0, 0.01]}>
             <boxGeometry args={[W * 0.78, 0.016, 0.0016]} />
-            <meshStandardMaterial color="#CCD6C8" roughness={0.88} />
+            <meshStandardMaterial
+              ref={bindMat('bill2')}
+              color="#CCD6C8"
+              emissive="#CCD6C8"
+              emissiveIntensity={0}
+              roughness={0.88}
+            />
           </mesh>
 
           <mesh geometry={geos.idCardGeo} position={[rightCenterX, 0, 0.0016]}>
             <meshStandardMaterial
+              ref={bindMat('idCard')}
               map={idCardTex}
+              emissive="#FFF5E6"
+              emissiveMap={idCardTex}
+              emissiveIntensity={0}
               roughness={0.44}
               metalness={0.02}
               polygonOffset
@@ -648,10 +727,14 @@ export default function DeskWallet3D({
 
           <mesh geometry={geos.idWindowFrameGeo} position={[0, 0, 0.0014]} castShadow receiveShadow>
             <meshStandardMaterial
+              ref={bindMat('idFrame')}
               map={leather.map}
               bumpMap={leather.bumpMap}
               bumpScale={0.003}
               color="#472B1C"
+              emissive="#472B1C"
+              emissiveMap={leather.map}
+              emissiveIntensity={0}
               roughness={0.66}
             />
           </mesh>
@@ -661,10 +744,14 @@ export default function DeskWallet3D({
         <group ref={leftFlapPivotRef} position={[0, 0, 0.0045]}>
           <mesh geometry={geos.leftPanelGeo} position={[0, 0, -0.0127]} castShadow receiveShadow>
             <meshStandardMaterial
+              ref={bindMat('leftPanel')}
               map={leather.map}
               bumpMap={leather.bumpMap}
               bumpScale={0.004}
               roughnessMap={leather.roughnessMap}
+              emissive="#FFF5E6"
+              emissiveMap={leather.map}
+              emissiveIntensity={0}
               roughness={0.68}
             />
           </mesh>
@@ -676,63 +763,111 @@ export default function DeskWallet3D({
             scale={[-1, 1, 1]}
           >
             <meshStandardMaterial
+              ref={bindMat('frontCover')}
               map={frontCoverTex}
               bumpMap={leather.bumpMap}
               bumpScale={0.003}
+              emissive="#FFF5E6"
+              emissiveMap={frontCoverTex}
+              emissiveIntensity={0}
               roughness={0.62}
             />
           </mesh>
 
           <mesh geometry={geos.leftFaceGeo} position={[0, 0, -0.0042]}>
             <meshStandardMaterial
+              ref={bindMat('leftInterior')}
               map={leftIntTex}
               bumpMap={leather.bumpMap}
               bumpScale={0.002}
+              emissive="#FFF5E6"
+              emissiveMap={leftIntTex}
+              emissiveIntensity={0}
               roughness={0.74}
             />
           </mesh>
 
           <mesh position={[leftCenterX, H * 0.46, -0.008]} rotation={[0, 0, 0.015]}>
             <boxGeometry args={[W * 0.78, 0.018, 0.0018]} />
-            <meshStandardMaterial color="#DFD8C5" roughness={0.88} />
+            <meshStandardMaterial
+              ref={bindMat('bill3')}
+              color="#DFD8C5"
+              emissive="#DFD8C5"
+              emissiveIntensity={0}
+              roughness={0.88}
+            />
           </mesh>
 
           {/* Top Peeking Card */}
           <mesh geometry={geos.cardGeo} position={[leftCenterX, 0.044, -0.0036]}>
-            <meshStandardMaterial color="#1F222A" roughness={0.42} metalness={0.22} />
+            <meshStandardMaterial
+              ref={bindMat('topCard')}
+              color="#1F222A"
+              emissive="#1F222A"
+              emissiveIntensity={0}
+              roughness={0.42}
+              metalness={0.22}
+            />
           </mesh>
           <mesh position={[leftCenterX - 0.054, 0.053, -0.0022]}>
             <boxGeometry args={[0.022, 0.015, 0.0005]} />
-            <meshStandardMaterial color="#D4AA63" roughness={0.28} metalness={0.82} />
+            <meshStandardMaterial
+              ref={bindMat('topChip')}
+              color="#D4AA63"
+              emissive="#D4AA63"
+              emissiveIntensity={0}
+              roughness={0.28}
+              metalness={0.82}
+            />
           </mesh>
 
           {/* Scalloped Leather Card Pocket Tier 1 */}
           <mesh geometry={geos.pocketGeo} position={[leftCenterX, 0.016, -0.0022]} castShadow>
             <meshStandardMaterial
+              ref={bindMat('pocket1')}
               map={leather.map}
               bumpMap={leather.bumpMap}
               bumpScale={0.003}
               color="#4B2E1E"
+              emissive="#4B2E1E"
+              emissiveMap={leather.map}
+              emissiveIntensity={0}
               roughness={0.66}
             />
           </mesh>
 
-          {/* Middle Peeking Card (Retains original Burgundy stripe inside wallet) */}
+          {/* Middle Peeking Card */}
           <mesh geometry={geos.cardGeo} position={[leftCenterX, 0.002, -0.0004]}>
-            <meshStandardMaterial color="#EAE0CE" roughness={0.46} />
+            <meshStandardMaterial
+              ref={bindMat('midCard')}
+              color="#EAE0CE"
+              emissive="#EAE0CE"
+              emissiveIntensity={0}
+              roughness={0.46}
+            />
           </mesh>
           <mesh position={[leftCenterX, 0.012, 0.001]}>
             <boxGeometry args={[0.158, 0.0055, 0.0004]} />
-            <meshStandardMaterial color="#842536" roughness={0.44} />
+            <meshStandardMaterial
+              ref={bindMat('midStripe')}
+              color="#842536"
+              emissive="#842536"
+              emissiveIntensity={0}
+              roughness={0.44}
+            />
           </mesh>
 
           {/* Scalloped Leather Card Pocket Tier 2 */}
           <mesh geometry={geos.pocketGeo} position={[leftCenterX, -0.022, 0.001]} castShadow>
             <meshStandardMaterial
+              ref={bindMat('pocket2')}
               map={leather.map}
               bumpMap={leather.bumpMap}
               bumpScale={0.003}
               color="#402618"
+              emissive="#402618"
+              emissiveMap={leather.map}
+              emissiveIntensity={0}
               roughness={0.68}
             />
           </mesh>
@@ -744,16 +879,27 @@ export default function DeskWallet3D({
             castShadow
           >
             <meshStandardMaterial
+              ref={bindMat('pocket3')}
               map={leather.map}
               bumpMap={leather.bumpMap}
               bumpScale={0.003}
               color="#4C2E1E"
+              emissive="#4C2E1E"
+              emissiveMap={leather.map}
+              emissiveIntensity={0}
               roughness={0.65}
             />
           </mesh>
           <mesh position={[-W + 0.028, -0.06, 0.006]} rotation={[Math.PI / 2, 0, 0]}>
             <cylinderGeometry args={[0.0038, 0.0038, 0.0014, 12]} />
-            <meshStandardMaterial color="#C89B54" roughness={0.28} metalness={0.86} />
+            <meshStandardMaterial
+              ref={bindMat('brassPin')}
+              color="#C89B54"
+              emissive="#C89B54"
+              emissiveIntensity={0}
+              roughness={0.28}
+              metalness={0.86}
+            />
           </mesh>
         </group>
       </group>

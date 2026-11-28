@@ -253,6 +253,9 @@ function SceneContents(props: OrihourCanvasProps) {
   // VSM Gaussian blur radius softly diffuses diagonal sunlight edges with zero stair-stepping
   const sunShadowRadius = weather === 'CLOUDY' ? 5.2 : weather === 'RAIN' ? 5.8 : 3.6;
 
+  // Intensitas cahaya khusus dompet (lebih kuat saat malam, lebih halus saat siang)
+  const walletLightBoost = atmosphere.isNightHud ? (lampOn ? 1.0 : 1.18) : 0.55;
+
   return (
     <>
       <color attach="background" args={[atmosphere.fogColor]} />
@@ -321,14 +324,6 @@ function SceneContents(props: OrihourCanvasProps) {
         intensity={atmosphere.roomFillIntensity * 11}
         distance={14}
         decay={1.45}
-      />
-
-      <pointLight
-        position={[-0.78, 2.26, 0.92]}
-        color="#FFF5E6"
-        intensity={walletOpen ? 0.52 : 0}
-        distance={2.6}
-        decay={2}
       />
 
       {/* Full-Room VSM Sunlight Shadow */}
@@ -429,6 +424,7 @@ function SceneContents(props: OrihourCanvasProps) {
       <DeskWallet3D
         owner={props.config.ownerProfile}
         isOpen={walletOpen}
+        lightBoost={walletLightBoost}
         onOpenWallet={props.onOpenWallet}
         onHoverLabel={props.onHoverLabel}
       />
