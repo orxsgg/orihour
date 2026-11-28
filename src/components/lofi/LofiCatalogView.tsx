@@ -138,7 +138,7 @@ export default function LofiCatalogView({
       }}
     >
       {/* Fixed Top Header — Never Scrolls */}
-      <header className="z-30 shrink-0 border-b border-[#E5D7C3] bg-[#FAF5EC]/92 backdrop-blur-xl">
+      <header className="z-30 shrink-0 border-b border-[#E5D7C3] bg-[#FAF5EC]/96">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3.5 sm:px-6 sm:py-4">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-[#4A2E1B] text-[#FAF5EC] shadow-xs sm:h-10 sm:w-10">
@@ -169,7 +169,7 @@ export default function LofiCatalogView({
       <div className="orihour-scroll flex-1 overflow-y-auto [scrollbar-gutter:stable]">
         <main className="mx-auto max-w-6xl space-y-5 px-4 py-5 sm:space-y-6 sm:px-6 sm:py-6">
           {/* Search & Filter Panel */}
-          <section className="space-y-3 rounded-[22px] border border-[#E5D7C3] bg-[#FAF5EC]/88 p-4 shadow-xs backdrop-blur-xl sm:space-y-3.5 sm:rounded-[24px] sm:p-5">
+          <section className="space-y-3 rounded-[22px] border border-[#E5D7C3] bg-[#FAF5EC]/95 p-4 shadow-xs sm:space-y-3.5 sm:rounded-[24px] sm:p-5">
             <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
               <div className="relative w-full sm:max-w-md">
                 <Search className="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-[#8A7360]" />
@@ -239,7 +239,7 @@ export default function LofiCatalogView({
 
           {/* Catalog Grid */}
           {filteredVinyls.length === 0 ? (
-            <div className="rounded-[24px] border border-[#E5D7C3] bg-[#FAF5EC]/85 py-16 text-center font-mono text-xs text-[#7A624E]">
+            <div className="rounded-[24px] border border-[#E5D7C3] bg-[#FAF5EC]/92 py-16 text-center font-mono text-xs text-[#7A624E]">
               No releases match your current search or filter.
             </div>
           ) : (
@@ -265,10 +265,10 @@ export default function LofiCatalogView({
                 return (
                   <article
                     key={v.id}
-                    className={`flex flex-col rounded-[22px] border p-4 shadow-xs backdrop-blur-xl transition sm:rounded-[24px] ${
+                    className={`flex flex-col rounded-[22px] border p-4 shadow-xs transition sm:rounded-[24px] ${
                       isCurrent
                         ? 'border-[#4A2E1B] bg-[#FFFDF8] ring-1 ring-[#4A2E1B]/20'
-                        : 'border-[#E5D7C3] bg-[#FAF5EC]/88 hover:bg-white/95'
+                        : 'border-[#E5D7C3] bg-[#FAF5EC]/95 hover:bg-white'
                     }`}
                   >
                     <div className="flex gap-3.5 sm:gap-4">
@@ -480,7 +480,7 @@ export default function LofiCatalogView({
 
       {/* In-Flow Flex Footer Player — Identical centered layout for both 1-track & multi-track releases */}
       {activeVinyl && (
-        <footer className="z-30 shrink-0 border-t border-[#E5D7C3] bg-[#FAF5EC]/96 shadow-[0_-10px_30px_rgba(24,17,12,0.1)] backdrop-blur-xl">
+        <footer className="z-30 shrink-0 border-t border-[#E5D7C3] bg-[#FAF5EC] shadow-[0_-10px_30px_rgba(24,17,12,0.1)]">
           <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-2.5 px-4 py-2.5 sm:px-6 md:grid-cols-3 md:gap-4 md:py-3">
             {/* Left: Cover Art + Title + Artist */}
             <div className="flex min-w-0 items-center gap-3">
@@ -509,7 +509,7 @@ export default function LofiCatalogView({
               </div>
             </div>
 
-            {/* Center: Unified [Prev] [Play/Pause] [Next] + Seek Bar Underneath (Prev/Next dimmed & disabled on 1-song releases) */}
+            {/* Center: Unified [Prev] [Play/Pause] [Next] + Seek Bar Underneath */}
             <div className="flex w-full justify-center">
               <div className="flex w-full max-w-md flex-col items-center gap-1.5">
                 <div className="flex items-center gap-2.5">

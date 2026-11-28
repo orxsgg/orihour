@@ -62,7 +62,8 @@ function getSourceKey(vinyl: VinylRecord, track: TrackItem | null): string {
   return track ? `${vinyl.id}:${track.id}` : vinyl.id;
 }
 
-const SHEET_EASE = 'cubic-bezier(0.32, 0.72, 0, 1)';
+const EASE_OUT_EXPO = 'cubic-bezier(0.22, 1, 0.36, 1)';
+const EASE_IN_SOFT = 'cubic-bezier(0.4, 0, 0.85, 0.45)';
 
 export default function OrihourHomePage() {
   const [webglSupported, setWebglSupported] = useState(true);
@@ -73,9 +74,9 @@ export default function OrihourHomePage() {
   const [curtainMounted, setCurtainMounted] = useState(true);
   const [hasEntered, setHasEntered] = useState(false);
 
-  // Solid full-height Tactile Sleeve Slide states
+  // Pre-warmed Staggered Warm Depth Lo-Fi transition states
   const [lofiMode, setLofiMode] = useState(false);
-  const [lofiMounted, setLofiMounted] = useState(false);
+  const [lofiOverlayShown, setLofiOverlayShown] = useState(false);
   const [lofiVisible, setLofiVisible] = useState(false);
   const [lofiSource, setLofiSource] = useState<'ENTRY' | 'ROOM'>('ENTRY');
   const lofiOpenTimerRef = useRef<number | null>(null);
@@ -189,14 +190,13 @@ export default function OrihourHomePage() {
       cancelPendingLofiAudioStop();
       setLofiSource(source);
       setLofiMode(true);
-      setLofiMounted(true);
-      // Pastikan sheet sudah ter-paint di luar layar bawah (100%) sebelum mulai meluncur naik
+      setLofiOverlayShown(true);
       lofiOpenTimerRef.current = window.setTimeout(() => {
         window.requestAnimationFrame(() => {
           setLofiVisible(true);
         });
         lofiOpenTimerRef.current = null;
-      }, 24);
+      }, 16);
     },
     [cancelPendingLofiAudioStop]
   );
@@ -218,23 +218,23 @@ export default function OrihourHomePage() {
       lofiStopAudioTimerRef.current = window.setTimeout(() => {
         audioEngine.stopRecord();
         lofiStopAudioTimerRef.current = null;
-      }, 240);
+      }, 250);
 
       setHasEntered(false);
       setCameraFocus('ENTRY');
     } else {
-      // Dari dalam ruangan 3D: biarkan musik tetap menyala & turntable tetap berputar
+      // Dari dalam ruangan 3D: biarkan musik tetap menyala & pertahankan posisi kamera terakhir
       setHasEntered(true);
-      setCameraFocus('DESK');
+      setCameraFocus((prev) => (prev === 'ENTRY' ? 'DESK' : prev));
     }
 
     if (lofiCloseTimerRef.current !== null) {
       window.clearTimeout(lofiCloseTimerRef.current);
     }
     lofiCloseTimerRef.current = window.setTimeout(() => {
-      setLofiMounted(false);
+      setLofiOverlayShown(false);
       lofiCloseTimerRef.current = null;
-    }, 460);
+    }, 520);
   }, [lofiSource, cancelPendingLofiAudioStop]);
 
   const handleSceneReady = useCallback(() => {
@@ -300,7 +300,7 @@ export default function OrihourHomePage() {
         setWebglSupported(false);
         setLofiSource('ENTRY');
         setLofiMode(true);
-        setLofiMounted(true);
+        setLofiOverlayShown(true);
         setLofiVisible(true);
         setDataReady(true);
         setSceneReady(true);
@@ -309,7 +309,7 @@ export default function OrihourHomePage() {
       setWebglSupported(false);
       setLofiSource('ENTRY');
       setLofiMode(true);
-      setLofiMounted(true);
+      setLofiOverlayShown(true);
       setLofiVisible(true);
       setDataReady(true);
       setSceneReady(true);
@@ -787,16 +787,14 @@ export default function OrihourHomePage() {
 
   return (
     <main className="relative h-[100dvh] w-screen overflow-hidden bg-[#120E0B] select-none">
-      {/* Persistent 3D Canvas — Subtle parallax lift without exposing black viewport borders */}
+      {/* Persistent 3D Canvas — Gentle depth scale breathing */}
       <div
         className="fixed inset-0 z-0 h-[100dvh] w-screen origin-center will-change-transform"
         style={{
-          transform: lofiVisible
-            ? 'translate3d(0, -18px, 0) scale(1.03)'
-            : 'translate3d(0, 0, 0) scale(1)',
+          transform: lofiVisible ? 'scale(0.972)' : 'scale(1)',
           transition: lofiVisible
-            ? `transform 500ms ${SHEET_EASE}`
-            : `transform 420ms ${SHEET_EASE}`,
+            ? `transform 540ms ${EASE_OUT_EXPO} 0ms`
+            : `transform 520ms ${EASE_OUT_EXPO} 110ms`,
         }}
       >
         {dataReady && webglSupported && (
@@ -869,7 +867,18 @@ export default function OrihourHomePage() {
       )}
 
       {!hasEntered ? (
-        <div className={lofiVisible ? 'pointer-events-none' : ''}>
+        <div
+          className={`fixed inset-0 z-20 will-change-transform ${
+            lofiVisible ? 'pointer-events-none' : ''
+          }`}
+          style={{
+            opacity: lofiVisible ? 0 : 1,
+            transform: lofiVisible ? 'scale(0.965)' : 'scale(1)',
+            transition: lofiVisible
+              ? `opacity 200ms ${EASE_IN_SOFT} 0ms, transform 240ms ${EASE_IN_SOFT} 0ms`
+              : `opacity 320ms ${EASE_OUT_EXPO} 170ms, transform 420ms ${EASE_OUT_EXPO} 160ms`,
+          }}
+        >
           <EntryGate
             visible={curtainFading}
             isNightHud={atmosphere.isNightHud}
@@ -884,63 +893,73 @@ export default function OrihourHomePage() {
           />
         </div>
       ) : (
-        <div className={lofiVisible ? 'pointer-events-none' : ''}>
-          <MinimalHud
-            activeVinyl={activeVinyl}
-            activeTrack={activeTrack}
-            vinylCount={vinyls.length}
-            postcardCount={postcards.length}
-            isPlaying={isPlaying}
-            progressRatio={progressRatio}
-            cameraFocus={cameraFocus}
-            weather={weather}
-            weatherBadgeText={weatherBadgeText}
-            lampOn={lampOn}
-            soundEnabled={soundEnabled}
-            hourDecimal={hourDecimal}
-            isLiveTime={isLiveTime}
-            phaseLabel={atmosphere.phaseLabel}
-            showTimeScrubber={showTimeScrubber}
-            hoverLabel={hoverLabel}
-            onChangeFocus={handleChangeFocus}
-            onChangeWeather={handleManualWeatherChange}
-            onToggleLamp={() => setLampOverride((prev) => !(prev ?? atmosphere.autoLampOn))}
-            onToggleSound={() => {
-              const next = !soundEnabled;
-              setSoundEnabled(next);
-              audioEngine.setSoundEnabled(next);
+        <>
+          <div
+            className={lofiVisible ? 'pointer-events-none' : ''}
+            style={{
+              opacity: lofiVisible ? 0 : 1,
+              transition: lofiVisible
+                ? `opacity 180ms ${EASE_IN_SOFT} 0ms`
+                : `opacity 320ms ${EASE_OUT_EXPO} 170ms`,
             }}
-            onTogglePlay={handleTogglePlay}
-            onPrevTrack={() => handleStepActiveTrack(-1)}
-            onNextTrack={() => handleStepActiveTrack(1)}
-            onSeekProgress={handleSeekTurntable}
-            onToggleTimeScrubber={() => setShowTimeScrubber((prev) => !prev)}
-            onScrubHour={(h) => {
-              setIsLiveTime(false);
-              setHourDecimal(h);
-            }}
-            onResetLiveTime={() => {
-              setIsLiveTime(true);
-              setHourDecimal(getCurrentLocalHourDecimal());
-            }}
-            onUpdateVolumes={(m, r, c) => {
-              audioEngine.setVolumes(m, r, c);
-              audioEngine.syncWeatherAmbience(weather);
-            }}
-            onOpenLinerNotes={() => {
-              if (activeVinyl) setLinerModalOpen(true);
-            }}
-            onOpenCollection={() => {
-              setSelectedCollectionItem(null);
-              setCollectionOpen(true);
-            }}
-            onOpenPinboard={() => {
-              setWalletOpen(false);
-              setCameraFocus('PINBOARD');
-              setPinboardOpen(true);
-            }}
-            onSwitchToLofi={() => openLofi('ROOM')}
-          />
+          >
+            <MinimalHud
+              activeVinyl={activeVinyl}
+              activeTrack={activeTrack}
+              vinylCount={vinyls.length}
+              postcardCount={postcards.length}
+              isPlaying={isPlaying}
+              progressRatio={progressRatio}
+              cameraFocus={cameraFocus}
+              weather={weather}
+              weatherBadgeText={weatherBadgeText}
+              lampOn={lampOn}
+              soundEnabled={soundEnabled}
+              hourDecimal={hourDecimal}
+              isLiveTime={isLiveTime}
+              phaseLabel={atmosphere.phaseLabel}
+              showTimeScrubber={showTimeScrubber}
+              hoverLabel={hoverLabel}
+              onChangeFocus={handleChangeFocus}
+              onChangeWeather={handleManualWeatherChange}
+              onToggleLamp={() => setLampOverride((prev) => !(prev ?? atmosphere.autoLampOn))}
+              onToggleSound={() => {
+                const next = !soundEnabled;
+                setSoundEnabled(next);
+                audioEngine.setSoundEnabled(next);
+              }}
+              onTogglePlay={handleTogglePlay}
+              onPrevTrack={() => handleStepActiveTrack(-1)}
+              onNextTrack={() => handleStepActiveTrack(1)}
+              onSeekProgress={handleSeekTurntable}
+              onToggleTimeScrubber={() => setShowTimeScrubber((prev) => !prev)}
+              onScrubHour={(h) => {
+                setIsLiveTime(false);
+                setHourDecimal(h);
+              }}
+              onResetLiveTime={() => {
+                setIsLiveTime(true);
+                setHourDecimal(getCurrentLocalHourDecimal());
+              }}
+              onUpdateVolumes={(m, r, c) => {
+                audioEngine.setVolumes(m, r, c);
+                audioEngine.syncWeatherAmbience(weather);
+              }}
+              onOpenLinerNotes={() => {
+                if (activeVinyl) setLinerModalOpen(true);
+              }}
+              onOpenCollection={() => {
+                setSelectedCollectionItem(null);
+                setCollectionOpen(true);
+              }}
+              onOpenPinboard={() => {
+                setWalletOpen(false);
+                setCameraFocus('PINBOARD');
+                setPinboardOpen(true);
+              }}
+              onSwitchToLofi={() => openLofi('ROOM')}
+            />
+          </div>
 
           <LinerNotesModal
             open={linerModalOpen}
@@ -989,35 +1008,42 @@ export default function OrihourHomePage() {
             onAddPostcard={handleAddPostcard}
             onClose={() => setPinboardOpen(false)}
           />
-        </div>
+        </>
       )}
 
-      {/* Solid Full-Height Tactile Sleeve Slide (Zero ghosting, pure 60fps transform) */}
-      {lofiMounted && (
+      {/* Pre-warmed Staggered Warm Depth Lo-Fi Overlay (Zero mount lag, zero ghosting) */}
+      {dataReady && (
         <div
+          aria-hidden={!lofiVisible}
           className={`fixed inset-0 z-40 overflow-hidden select-text ${
             lofiVisible ? 'pointer-events-auto' : 'pointer-events-none'
           }`}
+          style={{
+            visibility: lofiOverlayShown ? 'visible' : 'hidden',
+          }}
         >
-          {/* Smooth warm dim scrim behind the rising sleeve */}
+          {/* Warm espresso bridge scrim — mencegah double-exposure saat pergantian gelap <-> terang */}
           <div
-            className="pointer-events-none absolute inset-0 bg-[#120E0B]/55"
+            className="pointer-events-none absolute inset-0 bg-[#16100C]"
             style={{
-              opacity: lofiVisible ? 1 : 0,
+              opacity: lofiVisible ? 0.94 : 0,
               transition: lofiVisible
-                ? `opacity 440ms ${SHEET_EASE}`
-                : `opacity 380ms ${SHEET_EASE}`,
+                ? `opacity 250ms ease-out 0ms`
+                : `opacity 340ms ${EASE_OUT_EXPO} 140ms`,
             }}
           />
 
-          {/* Solid Opaque Sleeve Container sliding full-height from bottom */}
+          {/* Gentle Depth Float Lo-Fi Surface */}
           <div
-            className="relative h-full w-full overflow-hidden bg-[#F3ECE0] shadow-[0_-20px_56px_rgba(12,8,4,0.45)] will-change-transform"
+            className="relative h-full w-full overflow-hidden will-change-transform"
             style={{
-              transform: lofiVisible ? 'translate3d(0, 0, 0)' : 'translate3d(0, 100%, 0)',
+              opacity: lofiVisible ? 1 : 0,
+              transform: lofiVisible
+                ? 'translate3d(0, 0, 0) scale(1)'
+                : 'translate3d(0, 24px, 0) scale(0.985)',
               transition: lofiVisible
-                ? `transform 500ms ${SHEET_EASE}`
-                : `transform 420ms ${SHEET_EASE}`,
+                ? `opacity 360ms ${EASE_OUT_EXPO} 130ms, transform 480ms ${EASE_OUT_EXPO} 110ms`
+                : `opacity 240ms ${EASE_IN_SOFT} 0ms, transform 300ms ${EASE_IN_SOFT} 0ms`,
             }}
           >
             <LofiCatalogView
