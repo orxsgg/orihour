@@ -62,8 +62,8 @@ function getSourceKey(vinyl: VinylRecord, track: TrackItem | null): string {
   return track ? `${vinyl.id}:${track.id}` : vinyl.id;
 }
 
-const EASE_OUT_EXPO = 'cubic-bezier(0.22, 1, 0.36, 1)';
-const EASE_IN_SOFT = 'cubic-bezier(0.4, 0, 0.85, 0.45)';
+const SMOOTH_EASE = 'cubic-bezier(0.4, 0, 0.2, 1)';
+const SETTLE_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
 export default function OrihourHomePage() {
   const [webglSupported, setWebglSupported] = useState(true);
@@ -74,12 +74,13 @@ export default function OrihourHomePage() {
   const [curtainMounted, setCurtainMounted] = useState(true);
   const [hasEntered, setHasEntered] = useState(false);
 
-  // Pre-warmed Staggered Warm Depth Lo-Fi transition states
+  // Clean full-bleed cross-dissolve + gentle inner settle states
   const [lofiMode, setLofiMode] = useState(false);
   const [lofiOverlayShown, setLofiOverlayShown] = useState(false);
   const [lofiVisible, setLofiVisible] = useState(false);
   const [lofiSource, setLofiSource] = useState<'ENTRY' | 'ROOM'>('ENTRY');
-  const lofiOpenTimerRef = useRef<number | null>(null);
+  const lofiRaf1Ref = useRef<number | null>(null);
+  const lofiRaf2Ref = useRef<number | null>(null);
   const lofiCloseTimerRef = useRef<number | null>(null);
   const lofiStopAudioTimerRef = useRef<number | null>(null);
 
@@ -170,6 +171,17 @@ export default function OrihourHomePage() {
     []
   );
 
+  const cancelPendingLofiOpen = useCallback(() => {
+    if (lofiRaf1Ref.current !== null) {
+      window.cancelAnimationFrame(lofiRaf1Ref.current);
+      lofiRaf1Ref.current = null;
+    }
+    if (lofiRaf2Ref.current !== null) {
+      window.cancelAnimationFrame(lofiRaf2Ref.current);
+      lofiRaf2Ref.current = null;
+    }
+  }, []);
+
   const cancelPendingLofiAudioStop = useCallback(() => {
     if (lofiStopAudioTimerRef.current !== null) {
       window.clearTimeout(lofiStopAudioTimerRef.current);
@@ -183,29 +195,26 @@ export default function OrihourHomePage() {
         window.clearTimeout(lofiCloseTimerRef.current);
         lofiCloseTimerRef.current = null;
       }
-      if (lofiOpenTimerRef.current !== null) {
-        window.clearTimeout(lofiOpenTimerRef.current);
-        lofiOpenTimerRef.current = null;
-      }
+      cancelPendingLofiOpen();
       cancelPendingLofiAudioStop();
+
       setLofiSource(source);
       setLofiMode(true);
       setLofiOverlayShown(true);
-      lofiOpenTimerRef.current = window.setTimeout(() => {
-        window.requestAnimationFrame(() => {
+
+      lofiRaf1Ref.current = window.requestAnimationFrame(() => {
+        lofiRaf1Ref.current = null;
+        lofiRaf2Ref.current = window.requestAnimationFrame(() => {
+          lofiRaf2Ref.current = null;
           setLofiVisible(true);
         });
-        lofiOpenTimerRef.current = null;
-      }, 16);
+      });
     },
-    [cancelPendingLofiAudioStop]
+    [cancelPendingLofiOpen, cancelPendingLofiAudioStop]
   );
 
   const closeLofi = useCallback(() => {
-    if (lofiOpenTimerRef.current !== null) {
-      window.clearTimeout(lofiOpenTimerRef.current);
-      lofiOpenTimerRef.current = null;
-    }
+    cancelPendingLofiOpen();
     setLofiVisible(false);
     setLofiMode(false);
 
@@ -218,7 +227,7 @@ export default function OrihourHomePage() {
       lofiStopAudioTimerRef.current = window.setTimeout(() => {
         audioEngine.stopRecord();
         lofiStopAudioTimerRef.current = null;
-      }, 250);
+      }, 240);
 
       setHasEntered(false);
       setCameraFocus('ENTRY');
@@ -234,8 +243,8 @@ export default function OrihourHomePage() {
     lofiCloseTimerRef.current = window.setTimeout(() => {
       setLofiOverlayShown(false);
       lofiCloseTimerRef.current = null;
-    }, 520);
-  }, [lofiSource, cancelPendingLofiAudioStop]);
+    }, 280);
+  }, [lofiSource, cancelPendingLofiOpen, cancelPendingLofiAudioStop]);
 
   const handleSceneReady = useCallback(() => {
     setSceneReady(true);
@@ -243,9 +252,7 @@ export default function OrihourHomePage() {
 
   useEffect(() => {
     return () => {
-      if (lofiOpenTimerRef.current !== null) {
-        window.clearTimeout(lofiOpenTimerRef.current);
-      }
+      cancelPendingLofiOpen();
       if (lofiCloseTimerRef.current !== null) {
         window.clearTimeout(lofiCloseTimerRef.current);
       }
@@ -253,7 +260,7 @@ export default function OrihourHomePage() {
         window.clearTimeout(lofiStopAudioTimerRef.current);
       }
     };
-  }, []);
+  }, [cancelPendingLofiOpen]);
 
   useEffect(() => {
     if (sceneReady) {
@@ -787,16 +794,8 @@ export default function OrihourHomePage() {
 
   return (
     <main className="relative h-[100dvh] w-screen overflow-hidden bg-[#120E0B] select-none">
-      {/* Persistent 3D Canvas — Gentle depth scale breathing */}
-      <div
-        className="fixed inset-0 z-0 h-[100dvh] w-screen origin-center will-change-transform"
-        style={{
-          transform: lofiVisible ? 'scale(0.972)' : 'scale(1)',
-          transition: lofiVisible
-            ? `transform 540ms ${EASE_OUT_EXPO} 0ms`
-            : `transform 520ms ${EASE_OUT_EXPO} 110ms`,
-        }}
-      >
+      {/* Persistent 3D Canvas — Selalu full-bleed 100%, tanpa scale mengecil & tanpa pinggiran hitam */}
+      <div className="fixed inset-0 z-0 h-[100dvh] w-screen">
         {dataReady && webglSupported && (
           <OrihourCanvas
             config={roomConfig}
@@ -868,15 +867,10 @@ export default function OrihourHomePage() {
 
       {!hasEntered ? (
         <div
-          className={`fixed inset-0 z-20 will-change-transform ${
-            lofiVisible ? 'pointer-events-none' : ''
-          }`}
+          className={`fixed inset-0 z-20 ${lofiVisible ? 'pointer-events-none' : ''}`}
           style={{
             opacity: lofiVisible ? 0 : 1,
-            transform: lofiVisible ? 'scale(0.965)' : 'scale(1)',
-            transition: lofiVisible
-              ? `opacity 200ms ${EASE_IN_SOFT} 0ms, transform 240ms ${EASE_IN_SOFT} 0ms`
-              : `opacity 320ms ${EASE_OUT_EXPO} 170ms, transform 420ms ${EASE_OUT_EXPO} 160ms`,
+            transition: `opacity 220ms ${SMOOTH_EASE}`,
           }}
         >
           <EntryGate
@@ -898,9 +892,7 @@ export default function OrihourHomePage() {
             className={lofiVisible ? 'pointer-events-none' : ''}
             style={{
               opacity: lofiVisible ? 0 : 1,
-              transition: lofiVisible
-                ? `opacity 180ms ${EASE_IN_SOFT} 0ms`
-                : `opacity 320ms ${EASE_OUT_EXPO} 170ms`,
+              transition: `opacity 220ms ${SMOOTH_EASE}`,
             }}
           >
             <MinimalHud
@@ -1011,39 +1003,28 @@ export default function OrihourHomePage() {
         </>
       )}
 
-      {/* Pre-warmed Staggered Warm Depth Lo-Fi Overlay (Zero mount lag, zero ghosting) */}
+      {/* Full-Bleed Lo-Fi Surface: Edge-to-edge dissolve (zero black borders, zero dark flash) + subtle 12px inner settle */}
       {dataReady && (
         <div
           aria-hidden={!lofiVisible}
-          className={`fixed inset-0 z-40 overflow-hidden select-text ${
+          className={`fixed inset-0 z-40 overflow-hidden bg-[#F3ECE0] select-text ${
             lofiVisible ? 'pointer-events-auto' : 'pointer-events-none'
           }`}
           style={{
             visibility: lofiOverlayShown ? 'visible' : 'hidden',
+            opacity: lofiVisible ? 1 : 0,
+            transition: lofiVisible
+              ? `opacity 320ms ${SMOOTH_EASE}`
+              : `opacity 260ms ${SMOOTH_EASE}`,
           }}
         >
-          {/* Warm espresso bridge scrim — mencegah double-exposure saat pergantian gelap <-> terang */}
           <div
-            className="pointer-events-none absolute inset-0 bg-[#16100C]"
+            className="h-full w-full will-change-transform"
             style={{
-              opacity: lofiVisible ? 0.94 : 0,
+              transform: lofiVisible ? 'translate3d(0, 0, 0)' : 'translate3d(0, 12px, 0)',
               transition: lofiVisible
-                ? `opacity 250ms ease-out 0ms`
-                : `opacity 340ms ${EASE_OUT_EXPO} 140ms`,
-            }}
-          />
-
-          {/* Gentle Depth Float Lo-Fi Surface */}
-          <div
-            className="relative h-full w-full overflow-hidden will-change-transform"
-            style={{
-              opacity: lofiVisible ? 1 : 0,
-              transform: lofiVisible
-                ? 'translate3d(0, 0, 0) scale(1)'
-                : 'translate3d(0, 24px, 0) scale(0.985)',
-              transition: lofiVisible
-                ? `opacity 360ms ${EASE_OUT_EXPO} 130ms, transform 480ms ${EASE_OUT_EXPO} 110ms`
-                : `opacity 240ms ${EASE_IN_SOFT} 0ms, transform 300ms ${EASE_IN_SOFT} 0ms`,
+                ? `transform 380ms ${SETTLE_EASE}`
+                : `transform 260ms ${SMOOTH_EASE}`,
             }}
           >
             <LofiCatalogView
