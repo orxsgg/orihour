@@ -71,11 +71,12 @@ export default function OrihourHomePage() {
   const [curtainMounted, setCurtainMounted] = useState(true);
   const [hasEntered, setHasEntered] = useState(false);
 
-  // Tactile Sleeve Slide + 3D Depth Scale overlay states
+  // Smooth GPU-only Tactile Sleeve Slide + subtle 3D Depth Scale states
   const [lofiMode, setLofiMode] = useState(false);
   const [lofiMounted, setLofiMounted] = useState(false);
   const [lofiVisible, setLofiVisible] = useState(false);
   const [lofiSource, setLofiSource] = useState<'ENTRY' | 'ROOM'>('ENTRY');
+  const lofiOpenTimerRef = useRef<number | null>(null);
   const lofiCloseTimerRef = useRef<number | null>(null);
   const lofiStopAudioTimerRef = useRef<number | null>(null);
 
@@ -179,20 +180,28 @@ export default function OrihourHomePage() {
         window.clearTimeout(lofiCloseTimerRef.current);
         lofiCloseTimerRef.current = null;
       }
+      if (lofiOpenTimerRef.current !== null) {
+        window.clearTimeout(lofiOpenTimerRef.current);
+        lofiOpenTimerRef.current = null;
+      }
       cancelPendingLofiAudioStop();
       setLofiSource(source);
       setLofiMode(true);
       setLofiMounted(true);
-      window.requestAnimationFrame(() => {
-        window.requestAnimationFrame(() => {
-          setLofiVisible(true);
-        });
-      });
+      // Tunggu 1 frame paint selesai setelah mount agar slide mulai halus tanpa loncat
+      lofiOpenTimerRef.current = window.setTimeout(() => {
+        setLofiVisible(true);
+        lofiOpenTimerRef.current = null;
+      }, 25);
     },
     [cancelPendingLofiAudioStop]
   );
 
   const closeLofi = useCallback(() => {
+    if (lofiOpenTimerRef.current !== null) {
+      window.clearTimeout(lofiOpenTimerRef.current);
+      lofiOpenTimerRef.current = null;
+    }
     setLofiVisible(false);
     setLofiMode(false);
 
@@ -205,7 +214,7 @@ export default function OrihourHomePage() {
       lofiStopAudioTimerRef.current = window.setTimeout(() => {
         audioEngine.stopRecord();
         lofiStopAudioTimerRef.current = null;
-      }, 240);
+      }, 220);
 
       setHasEntered(false);
       setCameraFocus('ENTRY');
@@ -221,7 +230,7 @@ export default function OrihourHomePage() {
     lofiCloseTimerRef.current = window.setTimeout(() => {
       setLofiMounted(false);
       lofiCloseTimerRef.current = null;
-    }, 540);
+    }, 300);
   }, [lofiSource, cancelPendingLofiAudioStop]);
 
   const handleSceneReady = useCallback(() => {
@@ -230,6 +239,9 @@ export default function OrihourHomePage() {
 
   useEffect(() => {
     return () => {
+      if (lofiOpenTimerRef.current !== null) {
+        window.clearTimeout(lofiOpenTimerRef.current);
+      }
       if (lofiCloseTimerRef.current !== null) {
         window.clearTimeout(lofiCloseTimerRef.current);
       }
@@ -771,12 +783,10 @@ export default function OrihourHomePage() {
 
   return (
     <main className="relative h-[100dvh] w-screen overflow-hidden bg-[#120E0B] select-none">
-      {/* Persistent 3D Canvas with Smooth 3D Depth Scale Recession when Lo-Fi Sleeve Opens */}
+      {/* Persistent 3D Canvas — Pure GPU scale (tanpa blur/filter agar selalu 60fps) */}
       <div
-        className={`fixed inset-0 z-0 h-[100dvh] w-screen origin-center will-change-transform transition-[transform,filter,opacity] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-          lofiVisible
-            ? 'scale-[0.955] opacity-75 blur-[3px] brightness-75'
-            : 'scale-100 opacity-100 blur-0 brightness-100'
+        className={`fixed inset-0 z-0 h-[100dvh] w-screen origin-center will-change-transform transition-transform duration-350 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+          lofiVisible ? 'scale-[0.975]' : 'scale-100'
         }`}
       >
         {dataReady && webglSupported && (
@@ -850,7 +860,7 @@ export default function OrihourHomePage() {
 
       {!hasEntered ? (
         <EntryGate
-          visible={curtainFading && !lofiVisible}
+          visible={curtainFading && !lofiMounted}
           isNightHud={atmosphere.isNightHud}
           hourDecimal={hourDecimal}
           phaseLabel={atmosphere.phaseLabel}
@@ -863,7 +873,7 @@ export default function OrihourHomePage() {
         />
       ) : (
         <div
-          className={`transition-opacity duration-350 ease-out ${
+          className={`transition-opacity duration-250 ease-out ${
             lofiVisible ? 'pointer-events-none opacity-0' : 'opacity-100'
           }`}
         >
@@ -974,26 +984,26 @@ export default function OrihourHomePage() {
         </div>
       )}
 
-      {/* Tactile Sleeve Slide Lo-Fi Catalog Overlay */}
+      {/* Clean, Lightweight Tactile Sleeve Slide Lo-Fi Overlay (Full-bleed, Pure GPU) */}
       {lofiMounted && (
         <div
           className={`fixed inset-0 z-40 overflow-hidden select-text ${
             lofiVisible ? 'pointer-events-auto' : 'pointer-events-none'
           }`}
         >
-          {/* Warm translucent depth scrim */}
+          {/* Dim scrim ringan tanpa backdrop-blur agar tidak mengganggu FPS WebGL */}
           <div
-            className={`pointer-events-none absolute inset-0 bg-[#120E0B]/48 backdrop-blur-[4px] transition-opacity duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+            className={`pointer-events-none absolute inset-0 bg-[#120E0B]/48 transition-opacity duration-300 ease-out ${
               lofiVisible ? 'opacity-100' : 'opacity-0'
             }`}
           />
 
-          {/* Sliding Sleeve Container */}
+          {/* Full-bleed Tactile Sleeve Slide (hanya transform + opacity) */}
           <div
-            className={`relative h-full w-full overflow-hidden shadow-[0_-24px_80px_rgba(12,8,4,0.68)] will-change-transform transition-[transform,opacity,border-radius] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+            className={`relative h-full w-full overflow-hidden will-change-transform transition-[transform,opacity] ease-[cubic-bezier(0.22,1,0.36,1)] ${
               lofiVisible
-                ? 'translate-y-0 scale-100 rounded-t-none opacity-100'
-                : 'translate-y-[22vh] scale-[0.97] rounded-t-[28px] opacity-0'
+                ? 'translate-y-0 opacity-100 duration-350'
+                : 'translate-y-7 opacity-0 duration-260'
             }`}
           >
             <LofiCatalogView
