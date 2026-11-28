@@ -33,7 +33,7 @@ import {
   vinylMatchesGenre,
 } from '@/lib/genreUtils';
 import { getSleeveDataUrl } from '@/components/room-3d/textures';
-import MarqueeText from '@/components/ui/MarqueeText';
+import MarqueeText, { MarqueeSyncGroup } from '@/components/ui/MarqueeText';
 
 interface LofiCatalogViewProps {
   config: RoomConfig;
@@ -128,6 +128,9 @@ export default function LofiCatalogView({
   const activeSubText = activeVinyl
     ? `${activeVinyl.artist}${activeTrack ? ` · ${activeVinyl.title}` : ''}`
     : '';
+  const lofiMarqueeSyncKey = activeVinyl
+    ? `lofi-${activeVinyl.id}-${activeTrack?.id ?? 'single'}-${activeTitleText}|${activeSubText}`
+    : 'lofi-empty';
 
   return (
     <div
@@ -478,7 +481,7 @@ export default function LofiCatalogView({
         </main>
       </div>
 
-      {/* In-Flow Flex Footer Player — Identical centered layout for both 1-track & multi-track releases */}
+      {/* In-Flow Flex Footer Player — Synced Pause & Scroll Marquee Pair */}
       {activeVinyl && (
         <footer className="z-30 shrink-0 border-t border-[#E5D7C3] bg-[#FAF5EC] shadow-[0_-10px_30px_rgba(24,17,12,0.1)]">
           <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-2.5 px-4 py-2.5 sm:px-6 md:grid-cols-3 md:gap-4 md:py-3">
@@ -494,18 +497,20 @@ export default function LofiCatalogView({
                   <Music2 className="h-2.5 w-2.5" />
                   {isPlaying ? 'Now Playing' : 'Paused'}
                 </p>
-                <MarqueeText
-                  measureKey={`lofi-title-${activeVinyl.id}-${activeTrack?.id ?? 'single'}-${activeTitleText}`}
-                  className="font-serif text-base leading-tight text-[#241A13] sm:text-lg"
-                >
-                  {activeTitleText}
-                </MarqueeText>
-                <MarqueeText
-                  measureKey={`lofi-sub-${activeVinyl.id}-${activeTrack?.id ?? 'single'}-${activeSubText}`}
-                  className="text-[10.5px] leading-tight text-[#655040] sm:text-[11px]"
-                >
-                  {activeSubText}
-                </MarqueeText>
+                <MarqueeSyncGroup resetKey={lofiMarqueeSyncKey}>
+                  <MarqueeText
+                    measureKey={`lofi-title-${activeVinyl.id}-${activeTrack?.id ?? 'single'}-${activeTitleText}`}
+                    className="font-serif text-base leading-tight text-[#241A13] sm:text-lg"
+                  >
+                    {activeTitleText}
+                  </MarqueeText>
+                  <MarqueeText
+                    measureKey={`lofi-sub-${activeVinyl.id}-${activeTrack?.id ?? 'single'}-${activeSubText}`}
+                    className="text-[10.5px] leading-tight text-[#655040] sm:text-[11px]"
+                  >
+                    {activeSubText}
+                  </MarqueeText>
+                </MarqueeSyncGroup>
               </div>
             </div>
 

@@ -23,7 +23,7 @@ import {
   WeatherType,
 } from '@/types/orihour';
 import { hasMultipleTracks } from '@/lib/genreUtils';
-import MarqueeText from '@/components/ui/MarqueeText';
+import MarqueeText, { MarqueeSyncGroup } from '@/components/ui/MarqueeText';
 
 interface MinimalHudProps {
   activeVinyl: VinylRecord | null;
@@ -120,6 +120,7 @@ export default function MinimalHud(props: MinimalHudProps) {
 
   const titleKey = `t-${props.activeVinyl?.id ?? 'empty'}-${props.activeTrack?.id ?? 'single'}-${titleLine}`;
   const artistKey = `a-${props.activeVinyl?.id ?? 'empty'}-${props.activeTrack?.id ?? 'single'}-${artistLine}`;
+  const marqueeSyncKey = `${titleKey}|${artistKey}`;
 
   const backLabel =
     props.cameraFocus === 'NOTES'
@@ -335,11 +336,9 @@ export default function MinimalHud(props: MinimalHudProps) {
         </div>
       )}
 
-      {/* Bottom Corner Micro-Controls
-          - Mobile (< md): Stacked on left — [OPTIONS] [BACK TO DESK] right above the song title & player
-          - Desktop (md+): Player bottom-left, [BACK TO DESK] [inline options] [OPTIONS] bottom-right */}
+      {/* Bottom Corner Micro-Controls */}
       <footer className="pointer-events-none fixed right-0 bottom-0 left-0 z-20 flex flex-col-reverse items-start justify-between gap-2.5 px-4 py-3.5 sm:px-6 sm:py-4 md:flex-row md:items-end md:gap-3">
-        {/* Bottom-Left Player — Separated Title (Top) & Artist (Bottom) */}
+        {/* Bottom-Left Player — Synced Pause & Scroll Marquee Pair */}
         {showTrackNav ? (
           <div className="pointer-events-auto flex w-full max-w-[300px] flex-col gap-1.5 text-[#FAF5EC] drop-shadow-[0_1px_6px_rgba(0,0,0,0.8)] sm:w-[290px]">
             <div className="flex items-center gap-2.5">
@@ -384,18 +383,20 @@ export default function MinimalHud(props: MinimalHudProps) {
                 onClick={props.onOpenLinerNotes}
                 className="flex min-w-0 flex-1 cursor-pointer flex-col gap-0.5 overflow-hidden text-left transition hover:text-[#E6C79C]"
               >
-                <MarqueeText
-                  measureKey={titleKey}
-                  className="font-mono text-[11px] leading-tight font-semibold tracking-wide text-[#FAF5EC]"
-                >
-                  {titleLine}
-                </MarqueeText>
-                <MarqueeText
-                  measureKey={artistKey}
-                  className="font-mono text-[9.5px] leading-tight font-normal text-[#FAF5EC]/72"
-                >
-                  {artistLine}
-                </MarqueeText>
+                <MarqueeSyncGroup resetKey={marqueeSyncKey}>
+                  <MarqueeText
+                    measureKey={titleKey}
+                    className="font-mono text-[11px] leading-tight font-semibold tracking-wide text-[#FAF5EC]"
+                  >
+                    {titleLine}
+                  </MarqueeText>
+                  <MarqueeText
+                    measureKey={artistKey}
+                    className="font-mono text-[9.5px] leading-tight font-normal text-[#FAF5EC]/72"
+                  >
+                    {artistLine}
+                  </MarqueeText>
+                </MarqueeSyncGroup>
               </button>
             </div>
 
@@ -449,20 +450,22 @@ export default function MinimalHud(props: MinimalHudProps) {
                 }}
                 className="flex w-full min-w-0 cursor-pointer flex-col gap-0.5 overflow-hidden text-left transition hover:text-[#E6C79C]"
               >
-                <MarqueeText
-                  measureKey={titleKey}
-                  className={`font-mono text-[11px] leading-tight font-semibold tracking-wide ${
-                    hasRecord ? 'text-[#FAF5EC]' : 'text-[#FAF5EC]/82'
-                  }`}
-                >
-                  {titleLine}
-                </MarqueeText>
-                <MarqueeText
-                  measureKey={artistKey}
-                  className="font-mono text-[9.5px] leading-tight font-normal text-[#FAF5EC]/68"
-                >
-                  {artistLine}
-                </MarqueeText>
+                <MarqueeSyncGroup resetKey={marqueeSyncKey}>
+                  <MarqueeText
+                    measureKey={titleKey}
+                    className={`font-mono text-[11px] leading-tight font-semibold tracking-wide ${
+                      hasRecord ? 'text-[#FAF5EC]' : 'text-[#FAF5EC]/82'
+                    }`}
+                  >
+                    {titleLine}
+                  </MarqueeText>
+                  <MarqueeText
+                    measureKey={artistKey}
+                    className="font-mono text-[9.5px] leading-tight font-normal text-[#FAF5EC]/68"
+                  >
+                    {artistLine}
+                  </MarqueeText>
+                </MarqueeSyncGroup>
               </button>
 
               {/* Slim 2px Seekable Bar aligned cleanly under the separated title & artist */}
@@ -495,11 +498,8 @@ export default function MinimalHud(props: MinimalHudProps) {
           </div>
         )}
 
-        {/* Controls Container:
-            - Mobile (< md): Left-aligned above song title -> [OPTIONS] then [BACK TO DESK] on its right
-            - Desktop (md+): Right-aligned -> [BACK TO DESK] then [inline options] then [OPTIONS] */}
+        {/* Controls Container */}
         <div className="pointer-events-auto relative flex items-center justify-start gap-1.5 font-mono text-[10px] font-semibold tracking-wider text-[#FAF5EC] sm:text-[10.5px] md:justify-end">
-          {/* Mobile Popover Panel when OPTIONS is open (< md) — Anchored to Left above OPTIONS */}
           {controlsOpen && (
             <div className="absolute bottom-10 left-0 z-30 flex w-60 flex-col gap-1.5 rounded-2xl border border-[#E6C79C]/35 bg-[#1B120C]/92 p-2.5 shadow-2xl backdrop-blur-xl md:hidden">
               {props.weatherBadgeText && (
@@ -569,7 +569,6 @@ export default function MinimalHud(props: MinimalHudProps) {
             </div>
           )}
 
-          {/* Options Toggle Button: Leftmost on Mobile (order-1), Rightmost on Desktop (md:order-3) */}
           <button
             type="button"
             onClick={() => {
@@ -595,7 +594,6 @@ export default function MinimalHud(props: MinimalHudProps) {
             )}
           </button>
 
-          {/* Back-to-Desk Button: Right beside OPTIONS on Mobile (order-2), Left of inline options on Desktop (md:order-1) */}
           {props.cameraFocus !== 'DESK' && (
             <button
               type="button"
@@ -607,7 +605,6 @@ export default function MinimalHud(props: MinimalHudProps) {
             </button>
           )}
 
-          {/* Desktop Inline Controls Row (md+) */}
           {controlsOpen && (
             <div className="hidden items-center gap-1.5 md:order-2 md:flex">
               <button
